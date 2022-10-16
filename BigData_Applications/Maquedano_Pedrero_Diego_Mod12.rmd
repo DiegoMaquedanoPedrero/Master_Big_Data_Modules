@@ -1,0 +1,1131 @@
+---
+title: "Trabajo Módulo12: Pump it Up Data Mining the Water Table"
+author: "Diego Maquedano Pedrero"
+date: "Abril 2022"
+output: 
+  html_document:
+    theme: spacelab
+    highlight: tango
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true
+    code_folding: show
+    number_sections: true
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+---
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.align='center',
+                      echo=TRUE)
+```
+
+# Configuración inicial y carga de paquetes
+
+Antes de comenzar con los enunciados y el proyecto en sí, se comprueban si las distintas librerías que van a emplearse están instaladas para, en caso contrario, proceder a ello: 
+
+```{r}
+comprobar <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE, repos = "http://cran.us.r-project.org")
+    sapply(pkg, require, character.only = TRUE)
+}
+paquetes<-c("e1071","caret","MASS","dummies","naniar",
+            "nnet","NeuralNetTools","ggplot2","plotly","dplyr",
+            "data.table","reshape","pROC","reshape2","rpart", "rpart.plot",
+            "resample","randomForest","rattle","gbm","xgboost","caretEnsemble","parallel","doParallel","visualpred","plyr","arm","ggpubr","data.table","DataExplorer","inspectdf", "zoo", "DescTools","mice", "VIM")
+
+comprobar(paquetes)
+```
+
+Se coloca el código para ejecutar en paralelo y mejorar la velocidad:
+
+```{r}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster) 
+```
+
+También se carga la función customizada multiplot:
+
+```{r}
+source("multiplot.R")
+```
+
+
+# 1. Presentación de los datos
+
+## 1.1 Origen del dataset, descripción del problema y carga de datos
+
+El conjunto de datos sobre el que se va a trabajar consiste en un dataframe con observaciones procedentes del ministerio de Tanzania relativos a una serie de bombas de agua (o pozos) y variables relacionadas con ellos.
+
+Así, el objetivo será intentar predecir en base a estas mismas variables cuál es el estado operativo de cada pozo.
+
+Lo primero que se hará será unir las observaciones y variables independientes con la variable dependiente, pues vienen en archivos separados. También se cargará el test set para unirlo al train y tener toda la información contenida en un único dataframe. Con la finalidad de diferenciarlos en los algoritmos, se añadirá la columna train_test indicando a qué conjunto pertenece cada uno:
+
+```{r}
+train_indep<-read.csv("Train_Data.csv", sep = ",")
+train_labels<-read.csv("Train_Labels.csv", sep = ",")
+
+train_set<-merge(x=train_indep, y=train_labels, by="id")
+train_set$train_test<-"train"
+
+test_set<-read.csv("Test_data.csv", sep = ",")
+test_set$train_test<-"test"
+
+df = bind_rows(train_set,test_set)
+```
+
+## 1.2 Descripción de las variables
+
+En este apartado se indicará el significado de cada una de las variables independientes para hacerse una idea de la información que contiene el dataset:
+
+**amount_tsh**: Cantidad de agua disponible en el pozo
+
+**date_recorded**: Fecha en la que se incluyó el registro
+
+**funder**: Quién financió la construcción pozo
+
+**gps_height**: Altura a la que se encuentra el pozo
+
+**installer**: Quién construyó el pozo
+
+**longitude**: Coordenadas de longitud
+
+**latitude**: Coordenadas de latitud
+
+**wpt_name**: Nombre del pozo
+
+**num_private**: No se indica información sobre esta variable
+
+**basin**: Cuenca hidrográfica
+
+**subvillage**: Aldea
+
+**region**: Región
+
+**region_code**: Código de la región
+
+**district_code**: Código del distrito
+
+**lga**: Localización (1)
+
+**ward**: Localización (2)
+
+**population**: Población alrededor del pozo
+
+**public_meeting**: Si el pozo es público
+
+**recorded_by**: Quién introdujo el registro
+
+**scheme_management**: Quién se encarga del pozo (1)
+
+**scheme_name**: Quién se encarga del pozo (2)
+
+**permit**: Si el pozo está construido legalmente
+
+**construction_year**: Año en que se construyó el pozo
+
+**extraction_type**: Forma en que se extrae el agua del pozo (1)
+
+**extraction_type_group**: Forma en que se extrae el agua del pozo (2)
+
+**extraction_type_class**: Forma en que se extrae el agua del pozo (3)
+
+**management**: Quién se encarga del pozo (3)
+
+**management_group**: Quién se encarga del pozo (4)
+
+**payment**: Forma de pago en la extracción del agua (1)
+
+**payment_type**: Forma de pago en la extracción del agua (1)
+
+**water_quality**: Calidad del agua (1)
+
+**quality_group**: Calidad del agua (2)
+
+**quantity**: Cantidad de agua (1)
+
+**quantity_group**: Cantidad de agua (2)
+
+**source**: Procedencia del  agua (1)
+
+**source_type**: Procedencia del  agua (2)
+
+**source_class**: Procedencia del  agua (3)
+
+**waterpoint_type**: Tipo de pozo (1)
+
+**waterpoint_type_group** Tipo de pozo (2)
+
+Lo primero que llama la atención es que hay bastantes variables muy similares, es decir, que parece que contienen la misma información o muy parecida, como las relacionadas con la localización o la gestión de los pozos. Esto se explorará más en detalle en los próximos apartados de EDA.
+
+En cuanto a las dimensiones del dataset, este posee 59400 líneas y 42 variables (40 sin contar con la variable dependiente y la añadida para saber si es train o test):
+
+```{r}
+str(df)
+```
+
+Todas ellas están codificadas como strings excepto las numéricas que son integer. Es muy posible que muchas de ellas sean categóricas y habrá que convertirlas a factor posteriormente.
+
+En este primer vistazo, se observa por ejemplo que la variable construction_year posee bastantes valores 0, lo que hace suponer que estos puedan ser NA mal codificados y que en el resto del dataset ocurra un problema similar. También se puede ver en las variables payment con la categoría unknown.
+
+## 1.3 Eliminación y transformación de variables duplicadas.
+
+Dentro del dataframe hay algunas variables que contienen la misma información o muy parecida, de manera que la información que proporcionan es redundante para la creación de los modelos y se puede proceder a su borrado para reducir también el tamaño del dataset. Algunas son las relacionadas con quantity, management, payment, quality, source, extraction y waterpoint_type. Se crea una función que permitirá ir visualizando los valores de estos pares de variables:
+
+```{r}
+repeated_variables<-function(variable_1,variable_2){
+    
+    plot_1<-ggplot(data = df, aes(x = {{variable_1}}, y = ..count.., fill = {{variable_1}})) +
+      geom_bar() +
+      labs(title = "Variable 1") +
+      theme_bw() +
+      theme(legend.position = "bottom", axis.text.x=element_text(angle=45, hjust=1))
+    
+    plot_2<-ggplot(data = df, aes(x = {{variable_2}}, y = ..count.., fill = {{variable_2}})) +
+      geom_bar() +
+      labs(title = "Variable 2") +
+      theme_bw() +
+      theme(legend.position = "bottom", axis.text.x=element_text(angle=45, hjust=1))
+    
+    ggarrange(plot_1, plot_2, 
+              ncol = 2, nrow = 1)
+}
+```
+
+Empezando con payment:
+
+```{r}
+repeated_variables(payment, payment_type)
+```
+
+En ambos se muestran las mismas categorías, con la única diferencia de que los nombres son algo más específicos en payment con lo que se eliminará payment_type.
+
+En cuanto a la calidad del agua:
+
+```{r}
+repeated_variables(water_quality, quality_group)
+```
+
+La variable water_quality posee mayor especificidad e incluye todos los valores de quality_group, con lo que se eliminará quality_group.
+
+Ahora con management, hay hasta 4 variables que proporcionan información más o menos similar. En primer lugar se atenderá a la información sobre quién se encarga del pozo:
+
+```{r}
+table(df$scheme_management)
+length(unique(df$scheme_name))
+```
+
+Con estos datos, se ve que scheme_name contiene una cantidad excesiva de niveles y se puede prescindir de ella tomando como variable categórica de referencia para esta información el scheme_management.
+
+El otro par de variables muestra la manera de gestionar el pozo:
+
+```{r}
+repeated_variables(management, management_group)
+```
+
+La información no parece solaparse del todo entre ellas, pero sí entre management y scheme_management, por lo que se eliminará también scheme_management.
+
+Pasando a source:
+
+```{r}
+repeated_variables(source, source_type)
+```
+
+La variable source aporta mayor especificidad, por lo que es la que se elige para continuar en el dataset.
+
+En cuanto a quantity:
+
+```{r}
+repeated_variables(quantity, quantity_group)
+```
+
+Son exactamente iguales, se eliminará quantity_group.
+
+Respecto al tipo de pozo:
+
+```{r}
+repeated_variables(waterpoint_type,waterpoint_type_group)
+```
+
+Ambas contienen exactamente los mismos valores. Se elimina waterpoint_type_group.
+
+La última de las variables a considerar en este apartado tiene 3 variaciones y esta es extraction. Hace referencia a la forma en que se puede extraer el agua del pozo por lo que, a continuación, se muestra la interacción entre las 3 columnas de menor a mayor especificidad:
+
+```{r}
+df %>%
+    group_by(extraction_type_class,extraction_type_group,extraction_type) %>%
+    dplyr::summarise(n=n())
+```
+
+Viendo el resumen entre las 3 tipologías, las 3 se van a resumir en una única columna que combinará la información de extraction_type_class y extraction_type, puesto que la información de extraction_type_group ya queda recogida por las otras dos.
+
+Se procede a hacer todos los cambios en el dataframe que se han ido mencionando a lo largo del apartado:
+
+```{r}
+df2 <- df %>%
+    mutate(extraction = paste0(extraction_type_class, "_", extraction_type)) %>%
+    select(-c("payment_type",
+              "quality_group",
+              "scheme_name",
+              "scheme_management",
+              "source_type",
+              "quantity_group",
+              "waterpoint_type_group",
+              "extraction_type_class",
+              "extraction_type",
+              "extraction_type_group"))
+```
+
+Se modifican algunos nombres específicos de la columna recién creada:
+
+```{r}
+df2$extraction <- sub("other_other","other",df2$extraction)  
+df2$extraction <- sub("rope pump_other - rope pump","rope_pump",df2$extraction) 
+df2$extraction <- sub("submersible_submersible","submersible",df2$extraction)
+df2$extraction <- sub("gravity_gravity","gravity",df2$extraction)
+```
+
+
+# 2. EDA y feature engineering
+
+Antes que nada se comprobará cuál es la cantidad de NA catalogados como tal dentro del dataset. A ellos habrá que restarles los 14850 presentes en el test_set y que se habrán catalogado como tal al combinarlos con el train_set encontrándose estos en la variable status_group:
+
+```{r}
+gg_miss_var(df2)
+```
+
+Tal como muestra el gráfico, no parece haber ningún valor NA, pero en el análisis preliminar, algunas variables sí daban la impresión de contener este tipo de valores, aunque mal codificados. Por ello, parece que lo primero que ha de hacerse es revisar una a una su contenido y catalogar correctamente los NA así como la correcta tipología de variable.
+
+También antes de continuar se comprueba si hay valores duplicados:
+
+```{r}
+sum(duplicated(df2))
+```
+
+No hay registros duplicados por lo que el ID podría considerarse como la clave primaria y no hay que eliminar ninguno.
+
+### amount_tsh (cantidad numérica de agua en el pozo)
+
+La cantidad de agua en los pozos es una de las variables numéricas que, a priori, sí puede ser muy relevante para determinar la variable dependiente. Si se consultan sus posibles valores:
+
+```{r}
+length(unique(df2$amount_tsh))
+```
+
+Aparecen sólo 102, una cantidad nimia respecto al total de 74250 líneas en el dataset. En cuanto a la frecuencia con la que aparecen cada uno de ellos:
+
+```{r}
+qplot(table(df2$amount_tsh), binwidth=50)
+```
+
+Hay una gran cantidad de 0, lo que hace pensar de nuevo que los missing vienen codificados como tal. No obstante, es posible realmente que la cantidad de agua que posean los pozos sea 0, recordando que el clima de Tanzania es realmente caluroso, seco y casi nunca llueve de mayo a octubre como se puede ver en el siguiente enlace <https://www.climatestotravel.com/climate/tanzania>.
+
+En cuanto a la proporción sobre el total:
+
+```{r}
+df2 %>%
+    group_by(amount_tsh) %>%
+    tally() %>% 
+    mutate(proportion = (n / nrow(df))*100) %>% head()
+```
+Hasta un 70% del total de valores son 0 y las categorías inmediatamente siguientes son las que poseen mayores porcentajes, esto dejaría la puerta abierta a eliminar esta variable por la cantidad tan elevada de missing que posee. Sin embargo, antes de hacerlo, se prestará atención a la variable quantity que se encuentra también dentro del dataframe. Esta presenta, como ya se vio los siguientes valores:
+
+```{r}
+table(df2$quantity)
+```
+
+Aquellos pozos catalogados como dry y cuyo amount_tsh sea 0, se considerarán como observaciones reales, no missing y se comprobará cuál es su proporción después de esta transformación:
+
+```{r}
+df2$amount_tsh <- ifelse(df2$amount_tsh==0 & df2$quantity=="dry", 1, df2$amount_tsh)
+df2 %>%
+    group_by(amount_tsh) %>%
+    tally() %>% 
+    mutate(proportion = (n / nrow(df))*100) %>% head()
+```
+
+El porcentaje de missing sigue siendo del 61%, con lo que es conveniente eliminar la variable del análisis.
+
+```{r}
+df2 <-df2 %>% select(-amount_tsh)
+```
+
+### date_recorded (Fecha en la que se incluyó el registro)
+
+La variable date_recorded de por sí no aporta mucha información, únicamente indica el momento en que se inscribió la observación en el dataset. Sin embargo, esta variable en combinación con el construction_year puede convertirse en una única que muestre el total de años que lleva el pozo activo en el momento de la creación del dataset restando al año del date_recorded el construction_year:
+
+```{r}
+df2<-df2 %>% 
+    mutate(operating_years = year(date_recorded) - construction_year)
+
+unique(df2$operating_years)
+```
+
+Como se puede ver en los valores únicos de la columna construida, hay algunas cifras que no tienen sentido, como los números negativos o los valores por encima de 2000. Estos se producen en los registros donde el año de construcción está vacío y en algunos errores, pues no puede ser anterior la fecha de registro a la fecha de construcción. Es por ello que estos casos se codificarán como missing y se mostrará el porcentaje que estos representan sobre el total:
+
+```{r}
+df2$operating_years<-ifelse(df2$operating_years < 0 |
+                                df2$operating_years > 2000, NA, df2$operating_years)
+```
+
+Para ver su frecuencia:
+
+```{r}
+gg_miss_var(df2, show_pct = TRUE)
+```
+
+Vemos que con estas transformaciones los datos faltantes en status group suponen un 20% del total de observaciones, una cantidad elevada pero que se va a imputar reemplezando los NA con el último valor que no sea NA. Esto es porque su distribución no es muy irregular, como se puede ver en el siguiente gráfico:
+
+```{r}
+hist(df2$operating_years, breaks=40 , col=rgb(0.2,0.8,0.5,0.5) , border=F , main="" , xlab="Operating years")
+```
+
+Y para no imputar con un valor único que sea la media o mediana, se decide seguir esta técnica que conservará la forma de la distribución. Además tras ello se eliminarán las variables date_recorded y construction_year porque ya habría quedado sintetizada la información que estas aportan en una única variable:
+
+```{r}
+df2$operating_years<-na.locf0(df2$operating_years)
+df2$operating_years[1]=3
+
+df2<-df2 %>%
+    select(-c(date_recorded,construction_year))
+```
+
+Para terminar se visualizará la relación entre esta variable y la objetivo:
+
+```{r}
+df3<- df2 %>% filter(!is.na(status_group))
+ggplot(data = df3, aes(x = operating_years, fill = status_group)) +
+      geom_density(alpha = 0.5, na.rm = TRUE) +
+      geom_rug(aes(color = status_group), alpha = 0.5) +
+      theme_bw()
+```
+Con el gráfico parece ser claro el deterioro que van sufriendo los pozos con el tiempo porque a mayor valor de los años operativos mayor es las cantidad de pozos con status de no funcional. 
+
+### funder (Fecha en la que se incluyó el registro)
+
+Funder es una variable categórica que posee excesivos niveles diferentes:
+
+```{r}
+temp<-Freq(df2$funder)
+head(arrange(temp, desc(perc)), 20)
+```
+
+Se fijará el límite en un mínimo de 700 observaciones, las categorías por debajo de estas se agruparán en la categoría Other con la finalidad de no generar demasiadas variables dummy al pasar a los algoritmos de machine learning:
+
+```{r}
+names_low<-temp %>% filter(freq<700)
+names_low<-names_low$level
+df2$funder <-ifelse(df2$funder %in% names_low, "Others", df2$funder)
+```
+
+Las categorías que son 0 o vacío se calificarán como "Unknown" y se convierte la variable a factor:
+
+```{r}
+df2$funder <-ifelse(df2$funder == "0", "Unknown", df2$funder)
+df2$funder <-ifelse(df2$funder == "", "Unknown", df2$funder)
+df2$funder<-as.factor(df2$funder)
+```
+
+Representando la relación con status_group:
+
+```{r}
+df3<- df2 %>% filter(!is.na(status_group))
+ggplot(data = df3, aes(x = status_group, y = ..count.., fill = funder)) +
+  geom_bar() +
+  labs(title = "SibSp") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+En todos los posibles niveles de status_group parece haber la misma proporciónde funders, o lo que es lo mismo, no parece que esta variable sea muy influyente para la situación del pozo.
+
+### gps_height, latitude y longitude (Medidas de altura, longitud y latitud de los pozos)
+
+Estas 3 variables se analizarán de forma conjunta porque todas permiten representar la localización de los distintos pozos. gps_height es numérica y muestra la altura a la que se encuentra el pozo asumiendo que es sobre el nivel del mar. Los posibles valores que toma son:
+
+```{r}
+Freq(df2$gps_height)
+```
+
+Se ve que hay una gran cantidad de valores negativos y 0 que representan hasta el 37% del total. Como es imposible una altura negativa salvo errores y, además, según Wikipedia la altura mínima es el propio Océano Índico <https://en.wikipedia.org/wiki/Geography_of_Tanzania> se van a considerar estos valores como NA:
+
+```{r}
+df2$gps_height<-ifelse(df2$gps_height <= 0 , NA, df2$gps_height)
+```
+
+Antes de hacer nada con ellos se comprobará si realmente son aleatorios o si están relacionados con la localización espacial.
+
+Los valores de longitude son:
+
+```{r}
+Freq(df2$longitude)
+```
+
+Hay hasta 2269 valores con longitud 0 y luego ninguno hasta llegar a longitud 28 lo que lleva a pensar que esta segunda es la verdadera mínima longitud y, por tanto, los 0 son NA:
+
+```{r}
+df2$longitude<-ifelse(df2$longitude == 0 , NA, df2$longitude)
+```
+
+En cuanto a la latitud:
+
+```{r}
+Freq(df2$latitude)
+```
+
+En este caso los valores están algo mejor repartidos que en longitude, pero nos volvemos a encontrar que la latitud con valores entre -0.5 y 0 son 2269, exactamente los mismos casos que longitude y, siendo que la latitud máxima en este país es de -0.99 según <http://whereismap.net/where-is-tanzania-what-country-and-continent-is-tanzania/> se pueden considerar estos valores también como NA:
+
+```{r}
+df2$latitude<-ifelse(df2$latitude > -0.5 , NA, df2$latitude)
+```
+
+Ahora se intentan representar estas coordenadas a modo de mapa:
+
+```{r}
+ggplot(df2, aes(x = longitude, y = latitude, color = gps_height))+
+    geom_point()
+```
+
+Los puntos grises muestran los valores faltantes en la variable gps_height. Se ve claramente que se acumulan en regiones concretas, no son aleatorios y por ello no se van a imputar por el momento.
+
+Para ver la distribución geográfica de los pozos según su estatus:
+
+```{r}
+df3 <- df2 %>% filter(!is.na(status_group))
+ggplot(df3, aes(x = longitude, y = latitude, color = status_group))+
+    geom_point()
+```
+
+### installer (Quién construyó el pozo)
+
+Con esta variable nos encontramos en la misma situación que con funder, una variable categórica con gran cantidad de valores y se procederá de igual forma que antes:
+
+```{r}
+temp<-Freq(df2$installer)
+temp %>% dplyr::arrange(desc(perc)) %>% head(20)
+```
+
+Las proporciones de lo valores menos frecuentes son similares, así que se fija el límite para considerar un instalador genérico en 700 instalaciones:
+
+```{r}
+names_low<-temp %>% filter(freq<700)
+names_low<-names_low$level
+df2$installer <-ifelse(df2$installer %in% names_low, "Others", df2$installer)
+```
+
+Las categorías que son 0 o vacío se calificarán como NA y se convierte la variable a factor:
+
+```{r}
+df2$installer <-ifelse(df2$installer == "0", NA, df2$installer)
+df2$installer <-ifelse(df2$installer == "", NA, df2$installer)
+df2$installer<-as.factor(df2$installer)
+```
+
+### wpt_name (Nombre del pozo)
+
+Esta variable que muestra el nombre del pozo sería algo similar al id; pero, a continuación, se muestra que no es un valor único ya que hay un gran número de pozos de nombre "none" o sea que no tienen nombre y otros que se repiten. Debido a la enorme cardinalidad de la misma y a que, por lógica, el nombre del pozo no tiene mucha relevancia en cuanto a su desempeño, ya disponiendo del ID para tal fin, esta variable se eliminará:
+
+```{r}
+temp<-Freq(df2$wpt_name)
+temp %>% dplyr::arrange(desc(perc)) %>% head(20)
+df2<-df2 %>% select(-wpt_name)
+```
+
+### num_private (sin descripción)
+
+Esta variable no posee ninguna descripción, por lo que no se puede interpetar qué tipo de información proporciona:
+
+```{r}
+table(df2$num_private)
+```
+
+Además, casi todos los posibles valores que toma son 0, con lo que se eliminará del conjunto al no aportar información:
+
+```{r}
+df2<-df2 %>% select(-num_private)
+```
+
+### basin (Cuenca hidrográfica)
+
+La cuenca hidrográfica sí que puede ser un buen indicador para conocer si hay zonas en las que por su localización, el estado de bombeo y la relación con, por ejemplo la cantidad de agua son determinantes:
+
+```{r}
+temp<-Freq(df2$basin)
+temp %>% dplyr::arrange(desc(perc)) %>% head(20)
+```
+
+Visualizándolas en el mapa:
+
+```{r}
+df3 <- df2 %>% filter(!is.na(status_group))
+plot_1<-ggplot(df3, aes(x = longitude, y = latitude, color = basin))+
+    geom_point()
+
+plot_2<-ggplot(df3, aes(x = longitude, y = latitude, color = status_group))+
+    geom_point()
+
+multiplot(plot_1, plot_2)
+```
+
+No parece poder extraerse muchas conclusiones debido a la gran cantidad de puntos, pero sí puede verse que hay pocos pozos con estatus de no funcional en la cuenca de Rufiji y Wami, así como mayor concentración de los mismos en la cuenca de Ruvuma. En el resto parecen estar mezclados sin seguir un patrón claro.
+
+La variable no necesita mayores modificaciones más allá de convertirla en factor:
+
+```{r}
+df2$basin <- as.factor(df2$basin)
+```
+
+### subvillage, region, lga, district_code, region_code y ward (Variables geográficas)
+
+Estas variables muestran de nuevo la localización de los pozos con distintos niveles de granuralidad. La manera más precisa de situarlos es mediante las coordenadas de latitud y longitud, pero estas pueden permitir hacer grupos de manera más sencilla. Además, pueden servir para extrapolar y sacar medias de latiud y longitud por distritos e imputar valores a longitud y latitud.
+
+La variable region se puede fijar como categórica, pues tiene una cardinalidad aceptable de 21 niveles:
+
+```{r}
+Freq(df2$region)
+```
+
+La distribución del status de los pozos según la región es:
+
+```{r}
+df3 <- df2 %>% filter(!is.na(status_group))
+plot_1<-ggplot(df3, aes(x = longitude, y = latitude, color = region))+
+    geom_point()
+
+plot_2<-ggplot(df3, aes(x = longitude, y = latitude, color = status_group))+
+    geom_point()
+
+multiplot(plot_1, plot_2)
+```
+
+La distribución no permite ver una clara tendencia por regiones, parecen distribuirse de forma más o menos homogénea.
+
+También es interesante la información que puede aportar lga, pues algunos nombres contienen el prefijo rural o urban, y, como su cardinalidad es muy alta, se pueden hacer 3 grupos a partir de esta distinción:
+
+```{r}
+df2 = df2 %>% mutate(lga = ifelse( grepl(" rural", lga), "rural",
+                                     ifelse( grepl(" urban", lga), "urban","other")))
+df2$lga <- as.factor(df2$lga)
+df2$region <- as.factor(df2$region)
+```
+
+El resto de variables se van a eliminar porque poseen una excesiva cardinalidad y no hay una manera clara de agruparlas, además la información espacial que proporcionan ya se encuentra implícita en longitud y latitud:
+
+```{r}
+df2 = df2 %>% select(-c(region_code,district_code,ward,subvillage))
+```
+
+### population (Población alrededor del pozo)
+
+Esta variable numérica muestra cuál es la población alrededor del pozo. Parece que presenta una gran cantidad de 0:
+
+```{r}
+head(table(df$population))
+```
+
+Con hasta 26834 entradas cion ese valor, algo raro teniendo en cuenta que se trata de pozos y su utilidad es servir de agua a la gente. Se visualizan cuáles son estas zonas sin población suponiendo que son valores faltantes:
+
+```{r}
+df2$population<-ifelse(df2$population <= 0, NA, df2$population)
+df3 <- df2 %>% filter(!is.na(status_group))
+
+ggplot(df3, aes(x = longitude, y = latitude, color = population))+
+    geom_point()
+```
+
+Las zonas con población 0 parecen coincidir a la perfección con las regiones en las que gps_height es 0 como se analizó previamente:
+
+```{r}
+plot_1<-ggplot(df3, aes(x = longitude, y = latitude, color = gps_height))+
+    geom_point()
+
+plot_2<-ggplot(df3, aes(x = longitude, y = latitude, color = population))+
+    geom_point()
+
+multiplot(plot_1, plot_2)
+```
+
+Por lo que en esas zonas puede ser que haya un error en la recogida de datos. Por lo demás no es necesario hacer otras modificaciones.
+
+## public_meeting (Si el pozo es público)
+
+Esta es una variable lógica con valores True, Falso y vacíos, que se asumirán missing:
+
+```{r}
+Freq(df2$public_meeting)
+
+df2$public_meeting<-ifelse(df2$public_meeting <= 0, NA, df2$public_meeting)
+df2$public_meeting<-as.factor(df2$public_meeting)
+```
+
+### recorded_by (Quién introdujo el registro)
+
+La variable sólo posee 1 valor que es el mismo para todos los registros. Se elimina del dataset:
+
+```{r}
+df2<-df2 %>% select(-recorded_by)
+```
+
+### management y management_group (Quién se encarga del pozo)
+
+Si se visualizan los valores únicos de estas 2 variables:
+
+```{r}
+Freq(df2$management)
+Freq(df2$management_group)
+```
+
+Parece claro que management es un desglose con mayor precisión que management_group, concretamente en la categoría de user-group, en la cual no sólo se incluye vwc. Sin embargo, al no tener una alta representación el desglose y generar más cardinalidad que se tendrá que agrupar artificialmente, se decide eliminar management y recategorizar los niveles de management_group distinguiendo entre user-group y others:
+
+```{r}
+df2 <- df2 %>% select(-management)
+
+df2$management_group <-ifelse(df2$management_group != "user-group", "Others", df2$management_group)
+
+df2$management_group<-as.factor(df2$management_group)
+```
+
+### payment (Forma de pago en la extracción del agua)
+
+La variable en principio no necesita ninguna modificación más allá de recategorizar la categoría unknown como Missing y pasar a factor:
+
+```{r}
+Freq(df2$payment)
+
+df2$payment <-ifelse(df2$payment == "unknown", NA, df2$payment)
+df2$payment <- as.factor(df2$payment)
+```
+
+### water_quality (Calidad del agua)
+
+La variable en principio no necesita ninguna modificación más allá de recategorizar la categoría unknown como Missing y pasar a factor:
+
+```{r}
+Freq(df2$water_quality)
+
+df2$water_quality <-ifelse(df2$water_quality == "unknown", NA, df2$water_quality)
+df2$water_quality <- as.factor(df2$water_quality)
+```
+
+### quantity (Cantidad de agua)
+
+La variable en principio no necesita ninguna modificación más allá de recategorizar la categoría unknown como Missing y pasar a factor:
+
+```{r}
+Freq(df2$quantity)
+
+df2$quantity <-ifelse(df2$quantity == "unknown", NA, df2$quantity)
+df2$quantity <- as.factor(df2$quantity)
+```
+
+### source y source_class (Procedencia del agua)
+
+Con estas 2  variables, lo primero que vemos son los niveles que poseen
+
+```{r}
+Freq(df2$source)
+Freq(df2$source_class)
+```
+
+Se puede ver que source es más específica que source_class, teniendo algunas categorías para nada bien representadas, pero con algunos grupos suficientemente similares. Así, se agruparán todas aquellas categorías por debajo del 10% de representación como "otras" y la categoría unknown se codificará como NA:
+
+```{r}
+temp<-Freq(df2$source)
+
+names_low<-temp %>% filter(perc<0.1)
+names_low<-names_low$level
+df2$source <-ifelse(df2$source %in% names_low & df2$source != "unknown", "Others", df2$source)
+
+df2$source <-ifelse(df2$source == "unknown", NA, df2$source)
+```
+ 
+Con este mayor nivel de especificidad, pero sin excesiva cardinalidad, se puede prescindir de la otra variable:
+
+```{r}
+df2<-df2 %>% select(-source_class)
+```
+
+### waterpoint_type (Tipo de pozo)
+
+La información que contiene es parecida a la creada artificialmente como extraction, pero no coinciden del todo porque esta muestra el tipo de pozo en sí, mientras que la otra proporciona información acerca de la forma en que se extrae el agua de los mismos. Por ello se sigue conservando y se hará la modificación de combinar las categorías dam, cattle through e improved spring en la misma que other:
+
+```{r}
+Freq(df2$waterpoint_type)
+names_low<-c("dam","cattle trough","improved spring")
+df2$waterpoint_type <-ifelse(df2$waterpoint_type %in% names_low , "other", df2$waterpoint_type)
+```
+
+
+# 3. Imputación de valores ausentes, binarización y estandarización
+
+## 3.1. Imputación Missings
+
+Una vez disponemos del dataset con las variables correctamente colocadas y eliminando las necesarias para llevar a cabo el análisis. Se procederá a imputar los valores ausentes mediante el empleo de distintas librerías.
+
+Lo primero es visualizar después de las transformaciones el total de NA para cada variable:
+
+```{r}
+aggr_plot <-aggr(df2, col = c('navyblue', 'red'),
+        numbers = TRUE, sortVars = TRUE, labels = names(df2),
+        cex.axis = .5, gap = 3, ylab = c("Histogram of missing data", "Pattern"))
+```
+
+Las variables con mayor número de missing son gps_height, population, status_group y payment. status_group obviamente no cuenta porque son los datos del test set que no tienen asignada una calificación.
+
+También se debe tener en cuenta que los datos no son missing at random y que, por este motivo, se deben utilizar otros métodos distintos a la imputación por medias o modas.
+
+Antes de seguir se excluirá la variable status_group (la dependiente) para no realizar imputaciones ni transformaciones, siendo esta después pegada de nuevo al conjunto:
+
+```{r}
+status_col <- df2$status_group
+train_test_col<-df2$train_test
+df_transformations<- df2 %>% select(-c(status_group,train_test))
+```
+
+Se prueba a imputar todas las variables como si fueran MCAR permitiendo que MICE fije el método más adecuado para imputar. El siguiente bloque de código ha sido extraído de RPubs y pertenece a Kazuki Yoshida. Permite especificar las variables a imputar y las que se usarán para realizar la imputación permitiendo paralelización:
+
+```{r}
+## Configure parallelization
+## Parallel backend for foreach (also loads foreach and parallel; includes doMC)
+library(doParallel)
+## Reproducible parallelization
+library(doRNG)
+## Detect core count
+nCores <- min(parallel::detectCores(), 8)
+## Used by parallel::mclapply() as default
+options(mc.cores = nCores)
+## Used by doParallel as default
+options(cores = nCores)
+## Register doParallel as the parallel backend with foreach
+## http://stackoverflow.com/questions/28989855/the-difference-between-domc-and-doparallel-in-r
+doParallel::registerDoParallel(cores = nCores)
+## Report multicore use
+cat("### Using", foreach::getDoParWorkers(), "cores\n")
+cat("### Using", foreach::getDoParName(), "as backend\n")
+
+df_before <- df_transformations
+
+allVars <- names(df_transformations)
+
+missVars <- names(df_transformations)[colSums(is.na(df_transformations)) > 0]
+
+predictorMatrix <- matrix(0, ncol = length(allVars), nrow = length(allVars))
+rownames(predictorMatrix) <- allVars
+colnames(predictorMatrix) <- allVars
+
+
+cat("
+###  Specify Variables informing imputation\n")
+
+imputerVars <- c("funder","basin","region","lga","permit",
+                 "management_group","waterpoint_type","extraction",
+                 "operating_years")
+
+imputerVars <- intersect(unique(imputerVars), allVars)
+imputerVars
+imputerMatrix <- predictorMatrix
+imputerMatrix[,imputerVars] <- 1
+imputerMatrix
+
+cat("
+###  Specify variables with missingness to be imputed \n")
+
+imputedOnlyVars <- c("source","payment","installer","public_meeting",
+                     "water_quality","longitude","latitude","quantity",
+                     "population","gps_height")
+
+imputedVars <- intersect(unique(c(imputedOnlyVars, imputerVars)), missVars)
+imputedVars
+imputedMatrix <- predictorMatrix
+imputedMatrix[imputedVars,] <- 1
+imputedMatrix
+
+
+cat("
+###  Construct a full predictor matrix (rows: imputed variables; cols: imputer variables)\n")
+predictorMatrix <- imputerMatrix * imputedMatrix
+diag(predictorMatrix) <- 0
+predictorMatrix
+
+
+cat("
+###  Dry-run mice for imputation methods\n")
+dryMice <- mice(data = df_before, m = 1, predictorMatrix = predictorMatrix, maxit = 0)
+## Update predictor matrix
+predictorMatrix <- dryMice$predictorMatrix
+cat("###   Imputers (non-zero columns of predictorMatrix)\n")
+imputerVars <- colnames(predictorMatrix)[colSums(predictorMatrix) > 0]
+imputerVars
+cat("###   Imputed (non-zero rows of predictorMatrix)\n")
+imputedVars <- rownames(predictorMatrix)[rowSums(predictorMatrix) > 0]
+imputedVars
+cat("###   Imputers that are complete\n")
+setdiff(imputerVars, imputedVars)
+cat("###   Imputers with missingness\n")
+intersect(imputerVars, imputedVars)
+cat("###   Imputed-only variables without being imputers\n")
+setdiff(imputedVars, imputerVars)
+cat("###   Variables with missingness that are not imputed\n")
+setdiff(missVars, imputedVars)
+cat("###   Relevant part of predictorMatrix\n")
+predictorMatrix[rowSums(predictorMatrix) > 0, colSums(predictorMatrix) > 0]
+
+dryMice$method[setdiff(allVars, imputedVars)] <- ""
+cat("###   Methods used for imputation\n")
+dryMice$method[sapply(dryMice$method, nchar) > 0]
+
+
+cat("
+###  Run mice\n")
+M <- 4
+cat("### Imputing", M, "times\n")
+
+## Set seed for reproducibility
+set.seed(3561126)
+
+## Parallelized execution
+miceout <- foreach(i = seq_len(M), .combine = ibind) %dorng% {
+    cat("### Started iteration", i, "\n")
+    library(mice)
+    miceout <- mice(data = df_before, m = 1, print = TRUE,
+                    predictorMatrix = predictorMatrix, method = dryMice$method,
+                    nnet.MaxNWts = 1000)
+    cat("### Completed iteration", i, "\n")
+    ## Make sure to return the output
+    miceout
+}
+
+
+cat("
+###  Show mice results\n")
+## mice object ifself
+miceout
+## Variables that no longer have missingness after imputation
+cat("###   Variables actually imputed\n")
+actuallyImputedVars <-
+    setdiff(names(df_before)[colSums(is.na(df_before)) > 0],
+            names(complete(miceout, action = 1))[colSums(is.na(complete(miceout, action = 1))) > 0])
+actuallyImputedVars
+
+## Examine discrepancies
+cat("###   Variables that were unexpectedly imputed\n")
+setdiff(actuallyImputedVars, imputedVars)
+cat("###   Variables that were planned for MI but not imputed\n")
+setdiff(imputedVars, actuallyImputedVars)
+
+## Still missing variables
+cat("###   Variables still having missing values\n")
+names(complete(miceout, action = 1))[colSums(is.na(complete(miceout, action = 1))) > 0]
+```
+
+Una vez se ha obtenido el resultado, se crea un dataframe en el que se han sustituido los NA:
+
+```{r}
+completedData<-complete(miceout,1)
+```
+
+El único que no se ha imputado es source y se le aplicará implicación por moda, pues apenas llega a los 100 valores missing:
+
+```{r}
+val <- unique(completedData$source[!is.na(completedData$source)])
+my_mode <- val[which.max(tabulate(match(completedData$source, val)))]
+completedData$source[is.na(completedData$source)] <- my_mode
+sum(is.na(completedData))
+saveRDS(completedData, "completed_data.rds")
+```
+
+Se vuelve a añadir la columna de status_group al dataset:
+
+```{r}
+completedData$status_group <- status_col
+completedData$train_test <- train_test_col
+```
+
+Y ahora se prosigue con la estandarización.
+
+## 3.2. Estandarización
+
+La estandarización se aplicará a las variables continuas y se crearán vectores para las continuas, las categóricas y la dependiente:
+
+```{r}
+listconti<-c("gps_height","longitude","latitude","population","operating_years")
+listclass<-c("installer", "basin", "region", "lga", "public_meeting", "permit", "management_group", "payment", "water_quality", "quantity", "source", "waterpoint_type","extraction")
+vardep<-"status_group"
+```
+
+Tras generar los vectores se procede a la estandarización de las variables continuas en torno a la media restando la media y dividiendo entre la desviación típica:
+
+```{r}
+standard_data<-completedData
+means <-apply(standard_data[,listconti],2,mean,na.rm=TRUE)
+sds<-sapply(standard_data[,listconti],sd,na.rm=TRUE)
+
+df2<-scale(standard_data[,listconti], center = means, scale = sds)
+
+numerocont<-which(colnames(standard_data)%in%listconti)
+standard_data<-cbind(df2,standard_data[,-numerocont,drop=FALSE])
+```
+
+## 3.3. Creación de variables dummy
+
+Finalmente, ya se pueden tratar las variables categóricas para pasarlas a dummy:
+
+```{r}
+dfbis<-dummy.data.frame(standard_data, listclass, sep = ".")
+str(dfbis)
+```
+
+# 4. Modelización
+
+Una vez se tiene el dataframe correctamente preparado, es momento de comenzar a probar distintos modelos. Se comprueba de nuevo cuál es la distribución o la proporción de categorías en la variable dependiente:
+
+```{r}
+Freq(dfbis$status_group)
+```
+
+Ya se explicó previamente que el porcentaje de la categoría "functional needs repair" estaba bastante descompensada, pero al no ser una regresión binaria, no debe ser un problema del todo.
+
+Se probarán distintos algoritmos para extraer las predicciones sobre el test-set.
+
+El primero de ellos será mediante randomForest usando el paquete H2o. Lo primero es inicializar y transformar los dataframes a objetos h2o:
+
+```{r}
+library(h2o)
+h2o.init()
+```
+
+A continuación se separan los conjuntos de train y test en base a la columna train_test:
+
+```{r}
+train = dfbis %>%
+    filter(train_test == "train") %>% select(-train_test)
+test = dfbis %>%
+    filter(train_test == "test") %>% select(-c(train_test, status_group))
+```
+
+Se establecen las variables predictoras y la objetivo y se convierten los dataframes a objetos H2o:
+
+```{r}
+y <- "status_group"
+x <- setdiff(names(train), y)
+
+train_set_h2o = as.h2o(train)
+train_set_h2o$status_group<-as.factor(train_set_h2o$status_group)
+
+test_set_h2o = as.h2o(test)
+
+model_rf = h2o.randomForest(
+  x = x,
+  y = y,
+  training_frame = train_set_h2o,
+  ntrees = 1000, mtries = 10,
+  seed = 123456)
+
+```
+Se obtiene también la matriz de confusión con los distintos resultados:
+
+```{r}
+h2o.confusionMatrix(model_rf)
+```
+
+Se hacen las predicciones sobre el test_set y se guardan en csv para enviar a la plataforma de evaluación:
+
+```{r}
+predictions = as.data.frame(h2o.predict(model_rf,test_set_h2o))[,1]
+
+submission = tbl_df(fread("SubmissionFormat.csv")) %>%
+  mutate(status_group = predictions)
+
+write.csv(submission, row.names = FALSE, quote = FALSE,
+          file = "submission-h2o_randomForest-ntrees1000.csv")
+```
+
+La puntuación que se obtiene es de 0.8023  en este intento:
+
+![Puntuación 1: Random forest 1000 ntress y 10 mtries](C:/Users/Diego/Desktop/MASTER BIG DATA/Modulo_12_Aplicaciones_Big_Data/2.Tareas/Submission_1.JPG)
+
+
+El siguiente algoritmo que se probará es el de redes neuronales utilizando el paquete caret. Para ello se debe hacer una modificación en la variable dependiente que es transformarla en dummy:
+
+```{r}
+train_set_nn<-train_set
+listclass_nn<-c(listclass, "status_group")
+dfbis_nn<-dummy.data.frame(standard_data, listclass_nn, sep = ".")
+dfbis_nn<-dfbis_nn %>% select(-status_group.NA)
+```
+
+Hay en torno a 54.000 pozos entre la calificación de funcional y no funcional. Si se estipulan como mínimo 20 observaciones por parámetro en la clase de interés se tienen como máximo 2700 parámetros. Tomando como referencia el total de variables del modelo  se tiene que: 2700=h(103+1)+h+1 y el número de nodos resultantes como máximo serían 25
+
+El número de nodos orientativo se obtiene como 2700=h(103+1)+h+1 siendo h=25 y probando con 10, 15 y 20 nodos también.
+
+Y ahora se crea el modelo usando también un grid para extraer el mejor número de nodos y el decay adecuado:
+
+```{r}
+# control<-trainControl(method = "LGOCV",p=0.8,number=1, classProbs=TRUE,savePredictions = "all")
+# 
+# avnnetgrid <-expand.grid(size=c(10,15,20,25),
+#                          decay=c(0.01,0.1,0.001), bag=FALSE)
+# 
+# train_nn<-dfbis_nn %>%
+#     filter(train_test=="train") %>% select(-train_test)
+# 
+# train_nn$status_group.functional<-as.factor(train_nn$status_group.functional)
+# train_nn$`status_group.functional needs repair`<-as.factor(train_nn$`status_group.functional needs repair`)
+# train_nn$`status_group.non functional`<-as.factor(train_nn$`status_group.non functional`)
+# 
+# set.seed(77777)
+# redavnnet<- train(status_group.functional~.,data=train_nn,
+#                   method="avNNet",linout = FALSE,maxit=100,
+#                   trControl=control,tuneGrid=avnnetgrid,
+#                   repeats=5, verbose=FALSE)
+# 
+# redavnnet
+```
+
+Otro de los modelos a probar es la regresión multinomial aplicable cuando la variable respuesta es categórica con más de 2 niveles.
+
+```{r}
+train$status_group<-as.factor(train$status_group)
+multinomModel <- multinom(status_group ~ ., data=train)
+summary (multinomModel)
+```
+
+Se obtienen las predicciones y se valida el modelo:
+
+```{r}
+train$ClassPredicted <- predict(multinomModel, newdata = train, "class")
+tab <- table(train$status_group, train$ClassPredicted)
+round((sum(diag(tab))/sum(tab))*100,2)
+```
+
+Ofrece una precisión del 72.6%, bastante inferior al random forest, pues es un algoritmo menos potente.
+
+Se aplican las predicciones sobre el test set:
+
+```{r}
+test$ClassPredicted <- predict(multinomModel, newdata = test, "class")
+```
+
+Se extrae el archivo para subir a la plataforma:
+
+```{r}
+submission = tbl_df(fread("SubmissionFormat.csv")) %>%
+  mutate(status_group = test$ClassPredicted)
+
+write.csv(submission, row.names = FALSE, quote = FALSE,
+          file = "submission-h2o_multinomModel.csv")
+```
+
+En este caso la puntuación obtenida en la plataforma es algo peor, de 0.7245:
+
+![Puntuación 2: Multinomial Regression](C:/Users/Diego/Desktop/MASTER BIG DATA/Modulo_12_Aplicaciones_Big_Data/2.Tareas/Submission_2.JPG)
+
+
+
+
+
+
