@@ -1,0 +1,404 @@
+---
+title: "Prueba de Evaluación R"
+author: "Diego Maquedano Pedrero"
+date: "Noviembre 2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.align='center',
+                      echo=TRUE)
+```
+
+# Pregunta 1
+
+Este problema se puede resolver mediante el uso de una permutación, pues los
+números de la lotería para este ejemplo serán todas las posibles permutaciones
+de 4 elementos que se pueden formar con un vector formado por los números del 
+0 al 9.
+
+Antes de comenzar, se comprueba que la librería a cargar esté instalada y, en
+caso contrario, proceder a instalarla con el siguiente código:
+
+```{r}
+comprobar <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE)
+    sapply(pkg, require, character.only = TRUE)
+}
+paquetes<-c("gtools")
+
+comprobar(paquetes)
+```
+
+### Apartado a)
+
+En este caso se emplea la librería gtools que provee algunas funciones útiles en combinatoria, aunque también se podría usar combinat.
+
+```{r}
+# Cargar la librería
+library(gtools)
+
+# Definir vector con los dígitos del 0 al 9
+vec <- c(0:9) 
+
+# ALmacenar en una variable todas las permutaciones posibles (se genera como una
+# matriz y lo fuerzo a dataframe por comodidad en posteriores usos)
+res<- as.data.frame(permutations(n= 10, r = 4, v = vec, repeats.allowed = TRUE))
+
+# Como en cada columna viene un dígito, combino todas generando una nueva
+# columna que las combina para dar lugar al número como tal
+
+res$numero<-paste(res$V1,res$V2,res$V3,res$V4)
+
+# Mostrar como resultado únicamente esta columna en forma de dataframe
+res_final<-as.data.frame(res$numero)
+
+# Colocar un nombre de columna más explicativo
+colnames(res_final)<-c("Nums_Boletos")
+
+# Mostrar los primeros 20 resultados del dataframe
+head(res_final,20)
+
+# O mostrarlos de manera más compacta sin el dataframe
+res$numero
+```
+
+### Apartado b)
+
+Para este apartado se empleará el dataframe res del apartado anterior eliminando
+la columna de numero creada porque no es necesaria aquí.A continuación, se 
+sumarán los valores de cada una de las columnas para pasar a obtener la moda de
+dicha columna (valor más repetido)
+
+```{r}
+# Borrar columna numero de res
+res$numero<-NULL
+
+# Crear la columna con la suma de las otras columnas
+res$suma<-res$V1+res$V2+res$V3+res$V4
+
+# Como no hay una función de moda definida se puede definir la siguiente
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Se aplica la función a la columna del dataframe
+print(paste("La suma que más se repite es: ",Mode(res$suma)))
+```
+
+
+
+# Pregunta 2
+
+### Apartado a)
+
+Para importar los archivos en este problema, si se estuviera trabajando en un
+script ejecutable, se podría usar la función choose.files la cual permite elegir
+el archivo por parte del usuario sin tener un path predeterminado:
+
+```{r}
+#datos<-read.csv(choose.files())
+```
+
+Como no es el caso, se usará el directorio en el que tengo guardados los
+archivos y la función read.csv para los csv así como read.table para el txt:
+
+```{r}
+# Colocar el directorio donde están guardados los archivos para sólo poner el
+# nombre al leerlos
+setwd("C:/Users/Diego/Desktop/MASTER BIG DATA/Modulo_4_R/2.Tareas/TareaEvaluacion/Datos/Cod_19")
+
+# Ir almacenando en sus respectivas variables el contenido de los archivos
+provincias<-read.csv("datos_provincias.csv", sep=",", header=TRUE,
+                     encoding = "UTF-8")
+
+cod_prov<- read.table("CodProv.txt",sep =",", header = TRUE,
+                      encoding = "UTF-8")
+
+cod_CCAA<-read.csv("CodCCAA.csv", sep="\t", header=TRUE,
+                     encoding = "UTF-8")
+```
+
+Una vez se tienen los datos en dataframes se debe hacer un merge de las 
+provincias con cod_provincias para lo cual se hará una pequeña transformación en 
+este último añadiendo una columna con el código de la provincia sin el prefijo
+
+```{r}
+# generar nueva columna sin el prefijo
+cod_prov$provincia_iso<-gsub("ES-","",as.character(cod_prov$Código))
+head(cod_prov)
+
+# Hacer un merge del provincias por la columna provincia_iso con cod_prov
+provincias<-merge(provincias,cod_prov,by="provincia_iso")
+
+# Eliminar columnas innecesarias
+provincias[ ,c('Nombre.de.la.subdivisión.en.la.ISO1', 'Código')] <- list(NULL)
+head(provincias)
+```
+
+Una vez se tiene el dataframe, lo exportamos para tener el archivo
+datos_provincias con la nueva columna
+
+```{r}
+write.csv(provincias, "datos_provincias2.csv")
+```
+
+### Apartado b)
+
+Mi DNI es 50649501M por lo que haciendo la transformación que se pide,
+la comunidad que me corresponde se obtendría como:
+
+```{r}
+my_codigo<-50649501%%17
+cod_CCAA[cod_CCAA$X==my_codigo,]
+```
+
+Sabiendo esto se filtrarán en el dataframe de provincias aquellas líneas cuyo
+código sea el de Cataluña
+
+```{r}
+# Obtener el substring
+my_cod_prov<-gsub("ES-","",as.character(cod_CCAA[cod_CCAA$X==my_codigo,][1]))
+
+# Filtrar por aquellas filas que lo contengan en provincias
+my_data<-provincias[provincias$Comunidad.autónoma==my_cod_prov,]
+
+# Comprobar que, efectivamente es así y no se han incluido otras comunidades
+unique(my_data$Comunidad.autónoma)
+```
+
+### Apartado c)
+
+Echando un vistazo al dataset resultante, se comprueba que los datos están 
+desagregados por provincias dentro de la comunidad autónoma, es decir, para una 
+misma fecha, se dispone de los datos de varias provincias. Por ello, para tratar
+con el global de toda la comunidad de hará una agrupación por fecha de la
+num_casos:
+
+```{r}
+# Realizo la agregación en base a la columna de fecha sumando los casos
+agregado<-as.data.frame(aggregate(my_data$num_casos~my_data$fecha,my_data,sum))
+
+# Cambiar los nombres de las columnas
+colnames(agregado)<-c("Fecha","Casos_Nuevos")
+
+#Convertir a formato fecha la columna correspondiente
+agregado$Fecha<-as.Date(agregado$Fecha)
+```
+
+Por último, se realiza el gráfico que podría ser tanto de líneas (evolución
+temporal) como de barras. Se elegirá este último porque se muestran mejor las
+cantidades en este tipo de gráficos. Además se importará la librería ggplot2 
+para crear visualizaciones más refinadas y con fases de creación mejor definidas
+
+```{r}
+# Cargamos la librería ggplot2 y creamos el gráfico de barras
+library(ggplot2)
+ggplot(data=agregado,aes(x=Fecha,y=Casos_Nuevos))+
+  geom_bar(stat = "identity")+
+  ggtitle("Evolución de casos COVID-19") 
+
+# También se puede incluir el gráfico de líneas para comparar
+ggplot(data=agregado,aes(x=Fecha,y=Casos_Nuevos))+
+  geom_line()
+```
+
+### Apartado d)
+
+Para poder hacer las múltiples líneas, se deberán agregar todas las columnas al
+igual que se ha hecho en el apartado anterior, exceptuendo aquellas de tipo
+character
+
+```{r}
+# Crear una lista que será el input de la función aggregate con las columnas
+# que se van a agregar
+cols_agregar<-list(my_data$num_casos,
+                   my_data$num_casos_prueba_pcr,
+                   my_data$num_casos_prueba_test_ac,
+                   my_data$num_casos_prueba_otras,
+                   my_data$num_casos_prueba_desconocida)
+
+# Hacer el agregado por fecha
+agregado_multiple<-as.data.frame(aggregate(cols_agregar, by=list(my_data$fecha),
+                                           sum))
+
+#Cambiar el nombre de las columnas para que sean más explicativos
+colnames(agregado_multiple)<-c("Fecha","num_casos","num_casos_prueba_pcr",
+                               "num_casos_prueba_test_ac",
+                               "num_casos_prueba_otras",
+                               "num_casos_prueba_desconocida")
+# Poner la fecha como fecha
+agregado_multiple$Fecha<-as.Date(agregado_multiple$Fecha)
+```
+
+Se crea el gráfico con una línea para cada columna con ggplot añadiendo nombres
+a los ejes y colocando la leyenda
+
+```{r}
+ggplot(data=agregado_multiple, aes(x=Fecha)) + 
+  geom_line(aes(y = num_casos,colour="num_casos")) +
+  geom_line(aes(y = num_casos_prueba_pcr,colour="num_casos_prueba_pcr"))+
+  geom_line(aes(y = num_casos_prueba_test_ac,
+                colour="num_casos_prueba_test_ac")) + 
+  
+  geom_line(aes(y = num_casos_prueba_otras,colour="num_casos_prueba_otras"))+
+  geom_line(aes(y = num_casos_prueba_desconocida,
+                colour="num_casos_prueba_desconocida"))+
+  
+  labs(x="Fecha", y="Número",colour="Leyenda")+
+  theme(legend.position = c(0.8,0.85),legend.background=element_blank())
+```
+
+
+# Pregunta 3
+
+### Apartado a)
+
+Para realizar el primero de los gráficos se puede volver a usar la librería
+ggplot2 empleando las variables hp y mpg como ejes y carb como color en un
+gráfico de puntos
+
+```{r}
+ggplot(mtcars, aes(x=mpg, y=hp, color=carb))+
+  geom_point()
+```
+
+### Apartado b)
+
+En este segundo punto se podría emplear la librería dplyr, pero con la función
+base order se obtiene el mismo resultado ordenando de mayor a menor hp
+
+```{r}
+mtcars[order(mtcars$hp, decreasing=TRUE),]
+```
+
+### Apartado c)
+
+Para este apartado se añadirá una columna nueva al dataframe que mostrará el
+ratio solicitado para después ordenar por su observación máxima.
+
+```{r}
+# Se crea la columna con el ratio calculado
+mtcars$mpg_sobre_wt<-mtcars$mpg/mtcars$wt
+
+# Se selecciona la observación cuyo ratio sea el máximo de esa columna
+mtcars[mtcars$mpg_sobre_wt==max(mtcars$mpg_sobre_wt),]
+```
+
+
+# Pregunta 4
+
+Antes de ir a los apartados, se carga la matriz en una nueva variable
+
+```{r}
+datos<-structure(c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
+16, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 3, 
+2, 1, 1, 1, 1, 1, 1, 2, 1, 4, 1, 1, 1, 1, 1, 2, 2, 1, 1, 1, 1, 
+2, 3, 3, 1, 2, 1, 1, 1, 1, 1, 3, 4, 1, 1, 1, 2, 3, 4, 3, 1, 2, 
+1, 1, 4, 1, 1, 4, 4, 1, 1), .Dim = c(16L, 8L))
+```
+
+### Apartado a)
+
+Para este apartado se extraerá la última columna de la matriz, se convertirá en
+vector y se calcularán sus frecuencias relativas
+```{r}
+# Almacenar en un vector la última columna de la matriz como vector con 
+# transposición
+s7<-as.vector(t(datos)[8,])
+
+# Calcular las frecuencias relativas como el número de sucesos de cada tipología
+# entre el total de observaciones
+f_relativa<-tabulate(s7)/length(s7)
+
+# Calcular el complementario de dicha frecuencia relativa
+f_relativa_comp<-1-f_relativa
+
+# Combinar intercalando los resultados de ambos vectores
+vector_f_relativas<-c(rbind(f_relativa, f_relativa_comp))
+```
+
+### Apartado b)
+
+En este caso, se ha de generar una función personalizada que se pueda pasar como
+argumento de apply y aplicarse a todas las columnas de la matriz
+
+```{r} 
+# Definir la función siguiendo los pasos del apartado anterior, pero sin incluir
+# la parte de extracción del vector y su posterior transposición
+get_f_relativas <- function(vector) {
+  
+  f_relativa<-tabulate(vector, nbins = 8)/length(vector)
+  f_relativa_comp<-1-f_relativa
+  vector_f_relativas<-c(rbind(f_relativa, f_relativa_comp))
+  
+  return(vector_f_relativas)
+}
+
+# Almacenar en una variable el resultado de apply convirtiéndolo en matriz
+matriz_frecuencias<-as.matrix(apply(datos[,-1], 2, get_f_relativas))
+
+# Mostrar el resultado
+matriz_frecuencias
+```
+
+Este resultado muestra una matriz  de 16x8 estando en las columnas las semanas
+y siendo las filas los distintos pares de frecuencias relativas junto con sus 
+opuestos (tal como se pide en el enunciado). Como sólo hay 4 niveles de ardor, 
+habrá como máximo 4 parejas y por tanto 8 líneas con datos válidos, desde la
+línea 9 a la 16 es prescindible y sólo se muestran porque son el número de
+individuos de la muestra.
+
+De esta manera, procedemos a dejar la matriz de frecuencias como una matriz 8x8:
+
+```{r}
+matriz_frecuencias<-matriz_frecuencias[c(1:8),]
+
+# Mostrar el nuevo resultado
+matriz_frecuencias
+```
+
+Comentando ya los resultados, se pued ever que en la semana 1, como la sensación
+de ardor es en todo 1, sólo está el par 1-0, en la segunda semana ya hay más
+variedad con algún 2, por lo que surgen 4 valores diferentes y así va
+progresando hasta la última semana. Esto se ve mejor con los gráficos.
+
+
+### Apartado c)
+
+Se procede a generar el gráfico solicitado
+
+```{r}
+barplot(matriz_frecuencias,col = c("black","white"),
+        xlab = "Semanas",
+        ylab = "Nivel de ardor")
+```
+
+En el eje Y se muestran los distintos niveles de ardor que hay (hasta 4) y en 
+el eje X se encuentran las semanas. En la primera semana, todas las frecuencias 
+están concentradas en el 1 y en la última se ve como la frecuencia (la parte
+negra) queda más distribuida a lo largo de todos los niveles de ardor posibles.
+Podemos concluir que con el tiempo el hidrogel va causando sensación de ardor 
+a cada vez más personas.
+
+### Apartado d)
+
+Se incluyen en el gráfico los nuevos cambios
+
+```{r}
+barplot(matriz_frecuencias,
+        col = c("red","white"), 
+        xlab = "Semanas",
+        ylab = "Nivel de ardor")
+axis(3, col="black", col.ticks="black", col.axis="blue", cex.axis=1)
+```
+
+
+
