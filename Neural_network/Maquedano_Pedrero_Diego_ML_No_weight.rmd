@@ -1,0 +1,1934 @@
+---
+title: "Trabajo Machine Learning"
+author: "Diego Maquedano Pedrero"
+date: "Abril 2022"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.align='center',
+                      echo=TRUE)
+```
+
+Antes de comenzar con los enunciados y el proyecto en sí, se comprueba si las distintas librerías que van a emplearse están instaladas para, en caso contrario, proceder a ello:
+
+```{r}
+comprobar <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE, repos = "http://cran.us.r-project.org")
+    sapply(pkg, require, character.only = TRUE)
+}
+paquetes<-c("e1071","caret","MASS","dummies","naniar",
+            "nnet","NeuralNetTools","ggplot2","plotly","dplyr",
+            "data.table","reshape","pROC","reshape2","rpart", "rpart.plot",
+            "resample","randomForest","rattle","gbm","xgboost","caretEnsemble","parallel","doParallel","visualpred","plyr","arm","ggpubr","h2o")
+
+comprobar(paquetes)
+```
+
+Se coloca el código para ejecutar en paralelo y mejorar la velocidad:
+
+```{r}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+# 1. Presentación de los datos
+
+## 1.1 Origen del dataset y número de observaciones y variables
+
+El conjunto de datos usado para este trabajo procede del repositorio UCI al cual he accedido mediante el [ENLACE](https://archive.ics.uci.edu/ml/datasets/Estimation+of+obesity+levels+based+on+eating+habits+and+physical+condition+) presente en el archivo de texto incluido en los apuntes.
+
+Primero se procede a cargar el archivo almacenándolo en un dataframe:
+
+```{r}
+df<-read.csv("ObesityData.csv", sep = ",")
+#save(df, file = "obesity.rda")
+```
+
+El dataset escogido contiene información sobre el nivel de obesidad presente en población de México, Perú y Colombia basándose en los hábitos alimentarios y la práctica de deporte. De esta manera, nos encontramos un dataset con 2111 obervaciones y 17 variables:
+
+```{r}
+str(df)
+```
+
+## 1.2 Descripción de las variables
+
+Cada una de las varibales significa lo siguiente:
+
+* **Gender**: Es una variable binaria que muestra el género de la observación.
+
+* **Age**: Variable numérica que muestra la edad en años.
+
+* **Height**: Variable numérica que muestra la altura en metros.
+
+* **Weight**: Variable numérica que muestra el peso en kilogramos.
+
+* **family_history_with_overweight**: Variable binaria que toma el valor "yes" si en la familia del individuo hay casos de obesidad y "no" en caso contrario.
+
+* **FAVC - **: Variable binaria que toma el valor "yes" si hay un consumo frecuente de comida basura y "no" en caso contrario.
+
+* **FCVC**: Variable cualitativa que muestra la frecuencia del consumo de vegetales siendo el valor máximo 3 y mínimo 1.
+
+* **NCP**: Variable cualitativa que muestra el número de comidas principales hechas en el día siendo el valor máximo 3 y mínimo 1.
+
+* **CAEC**: Variable cualitativa que muestra la ingesta de alimentos entre comidas tomando como valores "no", Sometimes", "Frequently" y "Always".
+
+* **SMOKE**: Variable binaria que toma el valor "yes" si hay un consumo de tabaco y "no" en caso contrario.
+
+* **CH2O**: Variable cualitativa que muestra la frecuencia en el consumo diario de agua siendo el valor máximo 3 y mínimo 1.
+
+* **SCC**: Variable binaria que toma el valor "yes" si hay un control sobre el total de calorías ingeridas y "no" en caso contrario.
+
+* **FAF**: Variable cualitativa que muestra la frecuencia en la práctica de ejercicio físico siendo el valor máximo 3 y mínimo 1.
+
+* **TUE**: Variable cualitativa que muestra la frecuencia en el uso de dispositivos electrónicos siendo "0" nada y "3" muy frecuente.
+
+* **CALC**: Variable cualitativa que muestra el consumo de alcohol tomando como valores "no", Sometimes", "Frequently" y "Always".
+
+* **MTRANS**: Variable cualitativa que muestra el medio de transporte más utilizado día a día tomando como valores "Automobile", Bike", "Motorbike", "Public_Transportation" y "Walking".
+
+* **NObeyesdad**: Variable cualitativa que muestra el estado de peso de la persona, tomando valores como "Normal", "Overweight" y "Obesity" junto con sus subtipos. Esta será transformada para dar lugar a la variable binaria de interés.
+
+La variable objetivo será pues **Obesity_Y_N** y se generará artificialmente para indicar únicamente si la persona presenta alguno de los 3 tipos de obesidad o no. Tomará el valor 1 si esto ocurre y 0 en caso contrario:
+
+```{r}
+df<- df %>% mutate(NObeyesdad=ifelse(NObeyesdad=="Obesity_Type_I"|
+                                       NObeyesdad=="Obesity_Type_II"|
+                                       NObeyesdad=="Obesity_Type_III", "Yes","No")) %>% dplyr::rename(Obesity_Y_N=NObeyesdad)
+```
+
+## 1.3 Depuración de las variables
+
+Antes de continuar con las representaciones gráficas para observar distribuciones, se estandarizarán las variables continuas, se evaluará la presencia de datos faltantes y se convertirán variables categóricas a dummies. Además, las variables numéricas relacionadas con frecuencias y Age se importan con una serie de números decimales que no corresponden, por lo que en estas se redondearán a un número entero antes de convertirlas también a dummies:
+
+```{r}
+length(unique(df$FCVC))
+```
+
+No debería haber 810 valores distintos sino 3 así que se redondean a 0 decimales. También se guarda una copia del dataset sin estandarizar ni llevar a cabo otras transformaciones para posteriormente representar gráficamente algunas de las variables:
+
+```{r}
+df$Age<-round(df$Age,0)
+df$FCVC<-round(df$FCVC,0)
+df$NCP<-round(df$NCP,0)
+df$CH2O<-round(df$CH2O,0)
+df$FAF<-round(df$FAF,0)
+df$TUE<-round(df$TUE,0)
+df_rep<-df
+```
+
+Pasando a la estandarización, esta se aplicará sobre las variables continuas Age, Weight y Height creando primero vectores para estas variables, las categóricas y la dependiente:
+
+```{r}
+listconti<-c("Weight","Height","Age")
+listclass<-c("Gender", "family_history_with_overweight", 
+"FAVC", "FCVC", "NCP", "CAEC", "SMOKE", "CH2O", "SCC", "FAF", 
+"TUE", "CALC", "MTRANS")
+vardep<-"Obesity_Y_N"
+```
+
+Ahora se generan los vectores de medias y desviaciones típicas para aplicar la estandarización y formar el nuevo dataset:
+
+```{r}
+means <-apply(df[,listconti],2,mean,na.rm=TRUE)
+sds<-sapply(df[,listconti],sd,na.rm=TRUE)
+
+df2<-scale(df[,listconti], center = means, scale = sds)
+
+numerocont<-which(colnames(df)%in%listconti)
+df<-cbind(df2,df[,-numerocont,drop=FALSE])
+```
+
+Respecto a la existencia de datos faltantes, esta se puede comprobar con:
+
+```{r}
+sum(is.na(df))
+gg_miss_var(df)
+```
+
+Y vemos que el total de datos faltantes para este dataset es 0, información que puede contrastarse en el gráfico el cual no presenta ningún valor para esta tipología.
+
+Finalmente, ya se pueden tratar las variables categóricas para pasarlas a dummy y eliminar las menos representadas (en caso de que las haya) para evitar sobreajuste.
+
+Lo primero será obtener una tabla con las frecuencias para cada una de estas variables:
+
+```{r}
+frecu<-ldply(df[,listclass],function(x) t(rbind(names(table(x)),table(x))))
+names(frecu)<-c("variable","nivel","frecuencia")
+frecu$frecuencia<-as.numeric(frecu$frecuencia)
+frecu
+```
+
+Se puede observar que algunas variables, como las que representan el picoteo entre horas o el consumo de tabaco, tienen valores con frecuencias muy inferiores al resto de categorías. En el resto, casi todas suelen superar las 100 observaciones, por lo que se fijará este como límite para descartar aquellas con menos de ese número.
+
+Antes de hacer modificaciones, se crea un nuevo archivo por si fuera necesario usar posteriormente las variables originales:
+
+```{r}
+dfbis<-dummy.data.frame(df, listclass, sep = ".")
+```
+
+Se obtienen las variables con menos de 100 observaciones para proceder a su eliminación:
+
+```{r}
+frecu100<-frecu[frecu$frecuencia<100,]
+frecu100$dum<-paste(frecu100$variable,frecu100$nivel,sep=".")
+listamal<-dput(frecu100$dum)
+dfbis[,listamal]<-NULL
+```
+
+## 1.4 Número de observaciones de la variable objetivo
+
+Tal como se menciona en el enunciado de la tarea, el número mínimo de observaciones para la clase minoritaria debería ser de 100. Además, sería conveniente que la división no resulte muy pareja:
+
+```{r}
+table(dfbis$Obesity_Y_N)
+```
+
+Con esta comprobación, se ve que la clase minoritaria es el de las personas con algún tipo de obesidad (972) y la mayoritaria es el de las personas sin ella (1139). Con ello se cumplen los requisitos para poder continuar.
+
+## 1.5 Accuracy base y tasa de fallos base de referencia
+
+El porcentaje de observaciones de la clase minoritaria (y, por tanto, la tasa de fallos de referencia) es:
+
+```{r}
+table(dfbis$Obesity_Y_N)[2]/(table(dfbis$Obesity_Y_N)[2]+table(dfbis$Obesity_Y_N)[1])
+```
+
+Un 46%, prácticamente el 0.5 que suele tomarse como punto de corte por defecto.
+En cuanto a la accuracy:
+
+```{r}
+table(dfbis$Obesity_Y_N)[1]/(table(dfbis$Obesity_Y_N)[2]+table(dfbis$Obesity_Y_N)[1])
+```
+
+Un 54%.
+
+## 1.6 Representación gráfica de algunas variables
+
+A continuación se mostrarán algunos gráficos para ver la distribución de variables y la relación de dependencia entre la de interés y algunas que se consideran interesantes. Por ejemplo, entre las variables continuas y si existe o no obesidad
+
+```{r}
+ggplot(data=df_rep, aes(Obesity_Y_N,Weight))+
+    geom_boxplot(color="lightblue")+
+    ggtitle("Obesidad según peso")
+
+ggplot(data=df_rep, aes(Obesity_Y_N, Height))+
+    geom_boxplot(color="green")+
+    ggtitle("Obesidad según altura")
+
+ggplot(data=df_rep, aes(Obesity_Y_N, Age))+
+    geom_boxplot(color="orange")+
+    ggtitle("Obesidad según edad")
+```
+
+Como era de esperar, las personas con mayor peso son aquellas que suelen presentar mayores casos de obesidad, siendo la diferencia entre la media de pesos de las personas que la padecen y las que no de unos 40kg. Por otro lado, la obesidad no parece estar asociada a la altura pues las distribuciones de esta son bastante similares. En cuanto a la edad, sí parece haber una cierta diferencia de unos 5 años entre el conjunto de personas con la enfermedad y los que no, pero no es muy indicativo porque casi todas las muestras pertenecen a estas franjas y sólo algunos outliers poseen edades más avanzadas.
+
+Para ver algunas relaciones entre las variables categóricas y la dependiente:
+
+```{r}
+ggplot(data=df_rep, aes(x = SMOKE, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según fumador")
+
+ggplot(data=df_rep, aes(x = FAF, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según práctica de ejercicio")
+
+ggplot(data=df_rep, aes(x = SCC, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según control de calorías")
+
+ggplot(data=df_rep, aes(x = CAEC, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según consumo de alimentos entre horas")
+
+ggplot(data=df_rep, aes(x = CALC, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según consumo de alcohol")
+```
+
+En estos ejemplos se pueden extraer algunas conclusiones. Entre ellas se encuentra que, por ejemplo, hay muchas más personas encuestadas que no fuman en contraste con las que sí lo hacen. De ellas, hay casi el mismo número de individuos con obesidad. 
+
+Una visualización más reveladora es la práctica de ejercicio, pues se puede observar que la cantidad de gente con obesidad es menor cuanto más frecuente es la práctica del ejercicio y siempre inferior a aquellos sin obesidad, salvo en el nivel 0 (ningún ejercicio físico).
+
+Por último, se comentará el gráfico sobre el consumo de alcohol, pues es claro que la mayoría de encuestados no consumen alcohol o no lo hacen de manera frecuente y, en el primer caso, los afectados por obesidad son bastante inferiores. Esta situación cambia al hablar de un consumo ocasional, pues ahí predomina más la obesidad.
+
+
+# 2. Selección de variables
+
+## 2.1 Selecciones tipo stepwise
+
+Una vez se han limpiado y preparado los datos, se continuará con la selección de variables a considerar en los modelos posteriores mediante diversos métodos. Primero se probará con selecciones tipo stepwise:
+
+```{r}
+full<-glm(factor(Obesity_Y_N)~.,data=dfbis,family=binomial(link="logit"))
+null<-glm(factor(Obesity_Y_N)~1,data=dfbis,family=binomial(link="logit"))
+
+selec1<-stepAIC(null,scope=list(upper=full),direction="both",trace=FALSE)
+summary(selec1)
+formula(selec1)
+```
+
+Usando el criterio del AIC, las variables que se escogen para el modelo son Weight, Height, Gender.Female y FAF.0, pero los valores que se obtienen en los p-valor son extremadamente altos. Esto es debido a que existe una separación casi perfecta y para mejorarlo se emplea bayesglm que aplica algunas correcciones en las estimaciones:
+
+```{r}
+control<-trainControl(method = "none",savePredictions = "all",classProbs=TRUE)
+
+logi<- train(factor(Obesity_Y_N)~Weight+Height+Gender.Female+FAF.0,
+             data=dfbis,method="bayesglm",trControl=control)
+
+summary(logi)
+```
+
+Así se puede comprobar cómo los parámetros son bastante más significativos y con valores más adecuados.
+
+Es casi seguro que la correlación perfecta es generada por la variable Weight, pues es bastante obvio que la obesidad va a estar muy relacionada con el peso de un individuo y que esta va a opacar la importancia que puedan poseer otras variables si esta se desconociera. Por ello, se va a repetir el proceso excluyendo a esta del conjunto de datos:
+
+```{r}
+dfbis2<-dfbis %>% select(-Weight)
+set.seed(123)
+full<-glm(factor(Obesity_Y_N)~.,data=dfbis2,family=binomial(link="logit"))
+null<-glm(factor(Obesity_Y_N)~1,data=dfbis2,family=binomial(link="logit"))
+
+selec1<-stepAIC(null,scope=list(upper=full),direction="both",trace=FALSE)
+summary(selec1)
+formula(selec1)
+```
+
+Excluyendo Weight, se escogen muchas más variables y, además, con gran poder explicativo, por lo que de cara a los siguientes apartados no se incluirá de manera deliberada Weight con la finalidad de comprender mejor la importancia real de las demás variables.
+
+Se prueba también con la selección mediante BIC:
+
+```{r}
+selec2<-step(null, scope=list(lower=null, upper=full), direction="both",
+                    k=log(nrow(dfbis2)),trace=F)
+summary(selec2)
+```
+
+En esta figuran 4 parámetros menos y se contemplará también para las validaciones.
+
+## 2.2 Otros tipos de selección
+
+A continuación, se realizará selección repetida con submuestras de datos mediante la función steprepetido, primero mediante el criterio AIC:
+
+```{r}
+# Aplicando steprepetido binaria con criterio AIC
+
+source("funcion steprepetido binaria.R")
+dput(names(dfbis2))
+
+listconti<-
+    c("Height", "Age", "Gender.Female", "Gender.Male",
+      "family_history_with_overweight.no", "family_history_with_overweight.yes",
+      "FAVC.no", "FAVC.yes", "FCVC.1", "FCVC.2", "FCVC.3", "NCP.1",
+      "NCP.2", "NCP.3", "NCP.4", "CAEC.Frequently", "CAEC.Sometimes",
+      "SMOKE.no", "CH2O.1", "CH2O.2", "CH2O.3", "SCC.no", "FAF.0",
+      "FAF.1", "FAF.2", "FAF.3", "TUE.0", "TUE.1", "TUE.2", "CALC.no",
+      "CALC.Sometimes", "MTRANS.Automobile", "MTRANS.Public_Transportation")
+vardep<-c("Obesity_Y_N")
+
+data<-dfbis2
+
+lista_AIC<-steprepetidobinaria(data=data,
+                           vardep=vardep,listconti=listconti,sinicio=12345,
+                           sfinal=12355,porcen=0.8,criterio="AIC")
+
+tabla_AIC<-lista_AIC[[1]]
+dput(lista_AIC[[2]][[1]])
+dput(lista_AIC[[2]][[2]])
+```
+
+Se prueba también con BIC:
+
+```{r}
+# Aplicando steprepetido binaria con BIC
+
+lista_BIC<-steprepetidobinaria(data=data,
+                           vardep=vardep,listconti=listconti,sinicio=12345,
+                           sfinal=12355,porcen=0.8,criterio="BIC")
+
+tabla_BIC<-lista_BIC[[1]]
+dput(lista_BIC[[2]][[1]])
+dput(lista_BIC[[2]][[2]])
+```
+
+Con estos 6 modelos obtenidos mediante procedimientos stepwise y submuestras (1 mediante AIC, otro mediante BIC y los 2 mejores resultantes de los últimos algoritmos), se pasará a la selección de modelos.
+
+
+## 2.3 Comparación de sets mediante validación cruzada y boxplot bajo regresión
+
+Con los 4 conjuntos de variables escogidos, se llevará a cabo la validación cruzada repetida para obtener la mejor combinación en base a la regresión logística:
+
+```{r}
+source("cruzadas avnnet y log binaria.R")
+
+medias1<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.no" , "CAEC.Sometimes" ,
+"FAVC.no" , "NCP.4" , "FCVC.3" , "SCC.no" , "CH2O.2" , "FAF.3" , "NCP.3" , 
+"Age" , "MTRANS.Public_Transportation" , "CAEC.Frequently" , "FCVC.1" , 
+"Height" , "FAF.0" , "TUE.0"), listclass=c(""), grupos=4,sinicio=1234,repe=5)
+
+medias1$modelo="StepAIC"
+
+############################################
+
+medias2<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.no" , "CAEC.Sometimes" , "FAVC.no" , "NCP.4" , "FCVC.3" , "SCC.no" , "CH2O.2" , "FAF.3" , "NCP.3" , "Age" , "MTRANS.Public_Transportation" , "CAEC.Frequently"
+), listclass=c(""), grupos=4,sinicio=1234,repe=5)
+
+medias2$modelo="StepBIC"
+
+############################################
+
+medias3<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.yes", "CAEC.Sometimes", "FAVC.no", "NCP.4", "FCVC.3", "NCP.3", "Age", "MTRANS.Public_Transportation", 
+"SCC.no", "CAEC.Frequently", "CH2O.2", "FAF.3", "Height", "FAF.0", 
+"FCVC.1"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias3$modelo="RemuestreoAIC1"
+
+############################################
+
+medias4<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.yes", "CAEC.Sometimes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", 
+"MTRANS.Public_Transportation", "Age", "NCP.3", "TUE.2", "SMOKE.no", 
+"Height", "FAF.0", "FCVC.1"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias4$modelo="RemuestreoAIC2"
+
+############################################
+
+medias5<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.no", "CAEC.Sometimes", "FAVC.no", "NCP.4", "FCVC.2", "CH2O.2", "SCC.no", "FAF.3", "CAEC.Frequently", 
+"NCP.3", "Age", "MTRANS.Public_Transportation"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias5$modelo="RemuestreoBIC1"
+
+############################################
+
+medias6<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias6$modelo="RemuestreoBIC2"
+
+```
+
+Ahora se dibujan los boxplots para la tasa de fallos y el AUC:
+
+```{r}
+union1<-rbind(medias1,medias2,medias3,medias4,medias5,medias6)
+
+par(cex.axis=0.5)
+boxplot(data=union1,tasa~modelo,main="TASA FALLOS")
+```
+
+La tasa de fallos de referencia se situaba en un apartado previo en torno al 50% y los boxplots muestran una siempre inferior al 0.25 siendo el modelo Remuestreo BIC1 el que presenta una menor tasa junto con menor varianza.
+
+En cuanto al área bajo la curva:
+
+```{r}
+par(cex.axis=0.5)
+boxplot(data=union1,auc~modelo,main="AUC")
+```
+
+Todos ofrecen un valor de 0.87 más o menos, quedando como rezagado el conjunto por remuestreo con criterio BIC2 y volviendo a destacar el obtenido por remuetsreo BIC1. No obstante las diferencias entre unos y otros son prácticamente inexistentes y para escoger se tendrá en cuenta el total de variables, pues los que menos tengan serán mejores. Así se tomará como modelo de referencia el del criterio BIC2 con 11 variables, pues la diferencia de 0.004 en el AUC y la tasa de fallos no son relevantes para no usarlo como indicado:
+
+```{r}
+length(dput(lista_BIC[[2]][[2]]))
+```
+
+
+# 3.Tuneado de algoritmos (redes)
+
+## 3.1 Tuneado size redes
+
+Hay 972 individuos en el conjunto que poseen obesidad (Yes). Si se ponen como mínimo 
+20 observaciones por parámetro en la clase de interés se tienen como máximo 97 parámetros. Tomando como referencia el total de variables del modelo por remuestreo BIC1 (11) se tiene que: 48=h(11+1)+h+1 y el número de nodos resultantes como máximo serían 4.
+
+Como no parecen muchos, se valorará excluir algunas variables del modelo controlando la ganancia que pueda haber en el error y la pérdida de poder explicativo:
+
+```{r}
+medias6_1<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", 
+"Age"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias6_1$modelo="RemuestreoBIC2_1"
+
+##################################################
+
+medias6_2<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently",
+"Age"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias6_2$modelo="RemuestreoBIC2_2"
+
+##################################################
+
+medias6_3<-cruzadalogistica(data=dfbis2, vardep="Obesity_Y_N",listconti=c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3","Age"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias6_3$modelo="RemuestreoBIC2_3"
+
+# Boxplot error
+union2<-rbind(medias6_1, medias6_2, medias6_3)
+
+par(cex.axis=0.5)
+boxplot(data=union2,tasa~modelo,main="TASA FALLOS")
+
+# Boxplot AUC
+par(cex.axis=0.5)
+boxplot(data=union2,auc~modelo,main="AUC")
+
+```
+
+Como se puede ver, eliminando variables el error no sobrepasa en ninguno de los 3 casos el 0.25 y el poder explicativo se sigue situando por encima del 0.82 incluso con 5 variables presentes. Se concluye que para continuar el modelo de 5 variables es adecuado al compensar la pérdida en el AUC con la reducción en 6 variables. Para comparar y contar con 2, se usará también el modelo original con las 11 variables
+
+Los nodos resultantes pasan a ser como mucho 7: 48=h(5+1)+h+1. 
+
+## 3.2 Comparar cv repetida y boxplot
+
+A continuación se generará la grid con los argumentos a incluir en el modelo de redes y se generarán las mismas. Se especificarán modelos de 7, 11, 14 y 20 nodos aunque los últimos sobreajustarían demasiado:
+
+```{r}
+control<-trainControl(method = "LGOCV",p=0.8,number=1, classProbs=TRUE,savePredictions = "all")
+
+avnnetgrid <-expand.grid(size=c(7,11,14,20),
+                         decay=c(0.01,0.1,0.001), bag=FALSE)
+
+set.seed(123)
+redavnnet<- train(Obesity_Y_N~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+Age,data=dfbis2,
+                  method="avNNet",linout = FALSE,maxit=100,
+                  trControl=control,tuneGrid=avnnetgrid,
+                  repeats=5, verbose=FALSE)
+
+redavnnet
+```
+
+El mejor modelo parece ser el de 7 nodos con un decay del 0.001 pues tiene la mayor accuracy y kappa de todos con el menor número posible. El valor de accuracy y kappa se repite en size=11 y decay=0.01.
+
+Se prueba también a construir la red con 11 variables:
+
+```{r}
+avnnetgrid2 <-expand.grid(size=c(7,11,14,20),
+                         decay=c(0.01,0.1,0.001),bag=FALSE)
+
+set.seed(123)
+redavnnet2<- train(Obesity_Y_N~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,data=dfbis2,
+                  method="avNNet",linout = FALSE,maxit=100,
+                  trControl=control,tuneGrid=avnnetgrid,
+                  repeats=5, verbose=FALSE)
+
+redavnnet2
+```
+
+En esta red, se puede escoger como mejor una con 11 nodos y 0.001 de decay.
+
+## 3.2 Tuneado maxit
+
+Por último, antes de ir a la validación cruzada y mediante boxplots, se intentará escoger el número óptimo para el parámetro maxit, así como el de decay y los nodos para una última red a comparar:
+
+```{r}
+vardep<-"Obesity_Y_N"
+
+listconti=c("family_history_with_overweight.yes","FAVC.no","NCP.4","FCVC.3","Age")
+data2<-dfbis2[,c(listconti,vardep)]
+
+control<-trainControl(method = "cv", number=4,savePredictions = "all")
+
+set.seed(123)
+nnetgrid <- expand.grid(size=c(7,11),decay=c(0.01,0.1,0.001),bag=F)
+completo<-data.frame()
+listaiter<-c(50,100,200,500,1000,2000,3000)
+
+for (iter in listaiter)
+{
+  rednnet<- train(Obesity_Y_N~.,
+                  data=data2,
+                  method="avNNet",linout = FALSE,maxit=iter,
+                  trControl=control,repeats=5,tuneGrid=nnetgrid,trace=F)
+  rednnet$results$itera<-iter
+  completo<-rbind(completo,rednnet$results)
+  
+  
+}
+
+completo<-completo[order(completo$Accuracy),]
+
+ggplot(completo, aes(x=factor(itera), y=Accuracy, 
+                     color=factor(decay),pch=factor(size))) +
+  geom_point(position=position_dodge(width=0.5),size=3)
+
+```
+
+Según este, parece claro que el decay debe ser 0.01 o 0.1, pues son los que ofrecen mayor accuracy a lo largo de las iteraciones encontrándose esos colores en la parte superior del gráfico con mayor frecuencia que 0.001 (se elegirá 0.01). Por otro lado no parece haber mucha diferencia en cuanto al número de nodos. 7 estará bien para evitar sobreajustes. Por último, en cuanto a las iteraciones de maxit, entre 200 y 300 ofrecen mejores resultados así que se tomará 200 como valor a emplear en las redes
+
+## 3.3 Comparación CV repetida y boxplot
+
+Para terminar el apartado de redes, se procederá a comparar los modelos de regresión junto con las redes creadas usando los valores obtenidos por maxit para ver cuál se adaptaría mejor a explicar los datos:
+
+```{r}
+# Regresión logística de 11 variables escogida por remuestreo BIC
+medias6$modelo<-"Logística 11 var"
+
+# Regresión logística de 5 variables escogida por remuestreo BIC
+medias6_3$modelo<-"Logística 5 var"
+
+# Red con 7 nodos, decay de 0.01, 5 variables y maxit 100
+medias7 <- cruzadaavnnetbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = c(
+        "family_history_with_overweight.yes",
+        "FAVC.no",
+        "NCP.4",
+        "FCVC.3",
+        "Age"
+    ),
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    size = c(7),
+    decay = c(0.01),
+    repeticiones = 5,
+    itera = 100
+)
+
+medias7$modelo="avnnet1"
+
+# Red con 11 nodos, decay de 0.001 y 5 variables
+medias8 <- cruzadaavnnetbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = c(
+        "family_history_with_overweight.yes",
+        "FAVC.no",
+        "NCP.4",
+        "FCVC.3",
+        "SCC.no",
+        "CH2O.2",
+        "FAF.3",
+        "CAEC.Frequently",
+        "MTRANS.Public_Transportation",
+        "Age",
+        "NCP.3"
+    ),
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    size = c(11),
+    decay = c(0.001),
+    repeticiones = 5,
+    itera = 100
+)
+
+medias8$modelo="avnnet2"
+
+# Red optimizada con maxit
+medias9 <- cruzadaavnnetbin(
+    data = data2,
+    vardep = "Obesity_Y_N",
+    listconti = c(
+        "family_history_with_overweight.yes",
+        "FAVC.no",
+        "NCP.4",
+        "FCVC.3",
+        "Age"
+    ),
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    size = c(7),
+    decay = c(0.01),
+    repeticiones = 5,
+    itera = 200
+)
+
+medias9$modelo="Maxit"
+
+```
+
+En cuanto al boxplot comparativo entre todos:
+
+```{r}
+union3<-rbind(medias6,medias6_3,medias7,medias8,medias9)
+
+par(cex.axis=0.5)
+
+boxplot(data=union3,tasa~modelo,col="pink",main="TASA FALLOS")
+boxplot(data=union3,auc~modelo,col="pink",main="AUC")
+```
+
+Según muestran los gráficos, todos los modelos son bastante buenos y poseen muy poca varianza en sus resultados. Parece haber un claro modelo vencedor el cual es la red de 11 parámetros yendo a continuación una regresión logística y luego la red de 5 parámetros. Si hubiera que elegir, la decisión estaría sin duda entre la red o la regresión de 11 variables.
+
+
+# 4.Tuneado de algoritmos (bagging, random forest)
+
+## 4.1 Tuneado sampsize en bagging y random forest
+
+En este primer apartado el objetivo será aplicar bagging sobre el conjunto de datos y tunear el parámetro de sampsize mediante validación cruzada para después hacer lo mismo con un random forest. Se usarán como variables las 11 que se han ido usando en los anteriores y que ofrecían mejores resultados en redes y regresión. 
+
+Lo que se tendrá en cuenta aquí es que el bagging es el caso particular del random forest en el que el parámetro mtry coincide con el total de variables incluidas.
+
+A continuación, se crea el primer bagging sólo para ver la accuracy y el error estándar:
+
+```{r}
+listconti=c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3")
+
+cat(paste(listconti,collapse="+"))
+
+rfgrid<-expand.grid(mtry=c(11))
+
+set.seed(1234)
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+ classProbs=TRUE) 
+
+rf<- train(data=dfbis2,
+ factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+ method="rf",trControl=control,tuneGrid=rfgrid,
+ linout = FALSE,ntree=5000,nodesize=10,replace=TRUE)
+
+rf
+```
+
+Estos resultan ser bastante buenos, pues la accuracy alcanza el valor 0.82 y kappa 0.65.
+
+Para ver la evolución de los errores a medida que avanzan las iteraciones (OOB) o para encontrar el número óptimo de ntrees, se ejecutará lo siguiente:
+
+```{r}
+set.seed(12345)
+
+rfbis<-randomForest(factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+ data=dfbis2,
+ mtry=11,ntree=5000,sampsize=300,nodesize=10,replace=TRUE)
+
+plot(rfbis$err.rate[,1])
+```
+
+A partir de las 1000 muestras el error se empieza a estabilizar, pero se tomarán 2000 como mínimo ya que se preducen aún menos variaciones a partir de ese valor.
+
+Por último, se procede a comprobar cuál es el mejor sampsize mediante validación cruzada y revisión con boxplots. El número de observaciones del dataset dfbis2 es 2111 por lo que si se aplican 10 grupos de validación cruzada cada grupo debe tener como máximo para las pruebas 0.9 x 2111=1900 observaciones. Así se prueba con distintos valores para este parámetro. Mtry se mantiene en 11 que son las variables input fijadas y la condición para diferenciar al bagging del random forest:
+
+```{r}
+source ("cruzadas avnnet y log binaria.R")
+source ("cruzada arbolbin.R")
+source ("cruzada rf binaria.R")
+
+medias_bag_1 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 100
+)
+
+medias_bag_1$modelo="bagging100"
+
+##################################
+
+medias_bag_2 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 300
+)
+
+medias_bag_2$modelo="bagging300"
+
+#################################
+    
+medias_bag_3 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 700
+)
+
+medias_bag_3$modelo="bagging700"
+
+###############################
+
+medias_bag_4 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 1100
+)
+
+medias_bag_4$modelo="bagging1100"
+
+################################
+  
+medias_bag_5 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 1500
+)
+
+medias_bag_5$modelo="bagging1500"
+
+#################################
+
+# En este último modelo, si no se especifica el parámetro sampsize, caret pone por defecto el máximo de 1900 calculado anteriormente
+medias_bag_6 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE
+)
+
+
+medias_bag_6$modelo="baggingBASE"
+
+```
+
+Se dibujan los boxplots para ver la tasa de fallos ordenando de menor a mayor error cada uno de ellos:
+
+```{r}
+union_bag<-rbind(medias_bag_1,medias_bag_2,medias_bag_3,medias_bag_4,medias_bag_5, medias_bag_6)
+
+uni <- union_bag
+uni$modelo <- with(uni,
+                   reorder(modelo, tasa, mean))
+par(cex.axis = 0.5, las = 2)
+boxplot(data = uni, tasa ~ modelo, col = "pink",main="TASA FALLOS")
+
+```
+
+Con los resultados de los gráficos, es claro que sampsize debe situarse en valores elevados, sobre 1100 o 1500. Se elegirá el tamaño de 1100 como óptimo.
+
+## 4.2 Escoger número mínimo de ntrees
+
+Este apartado ya se ha incluido en el apartado anterior y básicamente consiste en hacer un gráfico de la OOB decidiendo a partir de cuantos ntrees se estabiliza la función.
+
+```{r}
+set.seed(12345)
+
+rfbis<-randomForest(factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+ data=dfbis2,
+ mtry=11,ntree=7000,sampsize=300,nodesize=10,replace=TRUE)
+
+plot(rfbis$err.rate[,1])
+```
+
+Poniendo un máximo de 7000 iteraciones, puede decirse que el número mínimo de ntrees a partir del cual es estable se encuentra en torno a los 2000, por ello se usará este parámetro también en los random forest que se realicen en los próximos pasos.
+
+## 4.3 Tuneado de mtry en rforest
+
+Continuando con la obtención de algoritmos para comparar con los modelos ya creados de regresión logística, redes y bagging, el siguiente será un random forest y se intentará encontrar también mediante validación cruzada el parámetro mtry.
+
+Las pruebas se harán sobre el conjunto óptimo con las 11 variables que se han venido empleando desde su decisión como mejor conjunto:
+
+```{r}
+listconti=c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3")
+
+paste(listconti,collapse="+")
+
+set.seed(12345)
+rfgrid<-expand.grid(mtry=c(3,4,5,6,7,8))
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+                      classProbs=TRUE) 
+
+rf<- train(factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,data=dfbis2,
+           method="rf",trControl=control,tuneGrid=rfgrid,
+           linout = FALSE,ntree=2000,nodesize=10,replace=TRUE,
+           importance=TRUE)
+
+rf
+```
+
+El número óptimo de mtry que se recomienda es 8 con un 83.84% de accuracy.
+
+## 4.4 Comparación cv repetida y boxplot
+
+Ya con los parámetros más adecuados tanto en random forest como bagging, se comparan con los modelos de regresión logística y redes anteriores por si alguno de los nuevos añadidos ofreciera mejores resultados:
+
+```{r}
+source ("cruzadas avnnet y log binaria.R")
+source ("cruzada arbolbin.R")
+source ("cruzada rf binaria.R")
+
+medias1 <- cruzadalogistica(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3"),
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 10
+)
+
+medias1$modelo="Logística"
+
+###################################
+
+medias2 <- cruzadaavnnetbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3"),
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 10,
+    size = c(11),
+    decay = c(0.001),
+    repeticiones = 5,
+    itera = 100
+)
+
+medias2$modelo="avnnet"
+
+##################################
+
+medias3 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3"),
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 20,
+    nodesize = 10,
+    mtry = 11,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 1100
+)
+
+medias3$modelo="bagging"
+
+##############################
+
+medias4 <- cruzadarfbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = c("family_history_with_overweight.yes", "FAVC.no", "NCP.4", "FCVC.3", "SCC.no", "CH2O.2", "FAF.3", "CAEC.Frequently", "MTRANS.Public_Transportation", 
+"Age", "NCP.3"),
+    listclass = c(""),
+    grupos = 10,
+    sinicio = 1234,
+    repe = 10,
+    nodesize = 10,
+    mtry = 8,
+    ntree = 2000,
+    replace = TRUE,
+    sampsize = 1100
+)
+
+medias4$modelo="rf"
+```
+
+Boxplot para visualizar:
+
+```{r}
+union1<-rbind(medias1,medias2,medias3,medias4)
+
+par(cex.axis=0.5)
+boxplot(data=union1,tasa~modelo,main="TASA FALLOS",col="pink")
+boxplot(data=union1,auc~modelo,main="AUC",col="pink")
+```
+
+Con los gráficos se ve bastante claro que tanto la red como el random forest y el bagging tienen una gran ventaja positiva respecto a la logística, lo que podría sugerir que la relación entre obesidad y las variables seleccionadas no es lineal y, por ello se adaptan de forma excelente estos algoritmos. Destaca por su precisión el random forest, algo lógico pues es la versión mejorada del bagging.
+
+
+# 5.Tuneado de algoritmos (gradient boosting)
+
+## 5.1 Tuneado de n.trees, shrinkage, minobsinnode
+
+En esta parte del trabajo se incluirá a la comparación de algoritmos uno nuevo empleando gradient boosting. Para ello, lo primero será tunear los parámetros de n.trees, shrinkage y minobsinnode. Las variables continuas sobre las que se aplicará el train son las mismas 11 que en apartados previos:
+
+```{r}
+set.seed(12345)
+
+gbmgrid<-expand.grid(shrinkage=c(0.1,0.05,0.03,0.01,0.001),
+ n.minobsinnode=c(5,10,20),
+ n.trees=c(100,500,1000,5000),
+ interaction.depth=c(2))
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+ classProbs=TRUE)
+
+gbm<- train(factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,data=dfbis2,
+ method="gbm",trControl=control,tuneGrid=gbmgrid,
+ distribution="bernoulli", bag.fraction=1,verbose=FALSE)
+
+gbm
+ 
+plot(gbm)
+```
+
+En los gráficos hay un patrón muy claro en cuanto a la evolución respecto a shrinkage y el número de árboles: con ntrees pequeño y shrinkage elevado se obtienen prácticamente los mismos resultados que con ntrees elevado y shrinkage pequeño. El parámetro minobsinnode no influye prácticamente en nada y se indica que lo mejor son 5000 ntrees.
+
+Teniendo esto en cuenta, se probará el número óptimo de ntrees fijando shrinkage en el 0.1 y minobsinnode = 10:
+
+```{r}
+set.seed(12345)
+
+gbmgrid<-expand.grid(shrinkage=c(0.1),
+ n.minobsinnode=c(10),
+ n.trees=c(500,800,1000,1200,1500,2100,3000,5000),
+ interaction.depth=c(2))
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+ classProbs=TRUE) 
+
+gbm<- train(factor(Obesity_Y_N)~.,data=dfbis2,
+ method="gbm",trControl=control,tuneGrid=gbmgrid,
+ distribution="bernoulli", bag.fraction=1,verbose=FALSE)
+
+gbm
+plot(gbm)
+```
+
+Con el gráfico se ve que el número óptimo se situaría en torno a los 3000 ntrees.
+
+## 5.2 Tuneado de bag.fraction
+
+Se hará también el tuneado de bag.fraction mediante validación cruzada (usando los parámetros más adecuados obtenidos en el apartado anterior) con la idea en mente de que a mayor valor de este parámetro, mejor funcionará en muestras de entrenamiento con pocas observaciones:
+
+```{r}
+set.seed(12345)
+gbmgrid<-expand.grid(shrinkage=c(0.1),
+ n.minobsinnode=c(10),
+ n.trees=c(500,800,1000,1200,1500,2100,3000,5000),
+ interaction.depth=c(2))
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+ classProbs=TRUE) 
+
+gbm1<- train(factor(Obesity_Y_N)~.,data=dfbis2,
+    method="gbm",trControl=control,tuneGrid=gbmgrid,
+    distribution="bernoulli", bag.fraction=0.2,verbose=FALSE)
+plot(gbm1)
+
+gbm2<- train(factor(Obesity_Y_N)~.,data=dfbis2,
+    method="gbm",trControl=control,tuneGrid=gbmgrid,
+    distribution="bernoulli", bag.fraction=0.4,verbose=FALSE)
+plot(gbm2)
+
+gbm3<- train(factor(Obesity_Y_N)~.,data=dfbis2,
+    method="gbm",trControl=control,tuneGrid=gbmgrid,
+    distribution="bernoulli", bag.fraction=0.6,verbose=FALSE)
+plot(gbm3)
+
+gbm4<- train(factor(Obesity_Y_N)~.,data=dfbis2,
+    method="gbm",trControl=control,tuneGrid=gbmgrid,
+    distribution="bernoulli", bag.fraction=0.8,verbose=FALSE)
+plot(gbm4)
+
+```
+
+
+Fijando bag.fraction en el 0.8 se obtiene la mayor accuracy respecto al número de ntrees sin que sea algo muy relevante. Se podría usar como parámetro insertándolo en la función "cruzada gbm binaria.R", pero para no modificar el archivo de la función, se usará el que toma R por defecto.
+
+## 5.3 Comparación cv repetida y boxplot
+
+Como en todos los apartados, se presenta la comparación de los resultados de este algoritmo respecto a todos los anteriores.
+
+```{r}
+source ("cruzada gbm binaria.R")
+
+medias_gbm <-
+    cruzadagbmbin(
+        data = dfbis2,
+        vardep = "Obesity_Y_N",
+        listconti = listconti,
+        listclass = c(""),
+        grupos = 4,
+        sinicio = 1234,
+        repe = 5,
+        n.minobsinnode = 10,
+        shrinkage = 0.1,
+        n.trees = 3000,
+        interaction.depth = 2
+    )
+
+medias_gbm$modelo = "gbm"
+
+union1<-rbind(medias1,medias2,medias3,medias4,medias_gbm)
+
+par(cex.axis=0.5)
+boxplot(data=union1,tasa~modelo,main="TASA FALLOS",col="pink")
+boxplot(data=union1,auc~modelo,main="AUC",col="pink")
+```
+
+El gradient boosting también pasa a estar al nivel del bagging, random forest y avnnet a pesar de estar diseñado para usarse en modelizaciones muy complejas.
+
+## 5.4 Tuneado de xgboost
+
+El último de los puntos a tratar dentro del apartado de gradient boosting será la técnica xgboost y el tuneado de sus parámetros siendo este uno más de los algoritmos incorporados para predecir.
+
+Primero se crea el modelo junto con los parámetros tuneables para encontrar los mejores y sobre las 11 variables ya preseleccionadas:
+
+```{r}
+set.seed(12345)
+
+xgbmgrid<-expand.grid(
+ min_child_weight=c(5,10,20),
+ eta=c(0.1,0.05,0.03,0.01,0.001),
+ nrounds=c(500,800,1000,1200,1500,2100,3000,5000),
+ max_depth=6,gamma=0,colsample_bytree=1,subsample=1)
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+ classProbs=TRUE) 
+
+xgbm<- train(factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,data=dfbis2,
+ method="xgbTree",trControl=control,
+ tuneGrid=xgbmgrid,verbose=FALSE)
+
+xgbm
+
+plot(xgbm)
+```
+
+En los gráficos anteriores el min_child_weight más bajo (5) es el que proporciona una accuracy mayor con gran diferencia respecto a los otros valores. En el caso de la shrinkage, se escoge la de 0.01 y en cuanto al número de iteraciones no hay diferencia alguna entre 3000 o 5000 por lo que 3000 se puede tomar como válido al igual que en gradient boosting.
+
+Se decide probar también con early stopping para ajustar con más precisión la cantidad de iteraciones:
+
+```{r}
+xgbmgrid<-expand.grid(eta=c(0.01),
+ min_child_weight=c(5),
+ nrounds=c(500,800,1000,1200,1500,2100,3000,5000),
+  max_depth=6,gamma=0,colsample_bytree=1,subsample=1)
+
+set.seed(12345)
+control<-trainControl(method = "cv",number=4,savePredictions = "all",
+ classProbs=TRUE) 
+
+xgbm<- train(factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,data=dfbis2,
+ method="xgbTree",trControl=control,
+ tuneGrid=xgbmgrid,verbose=FALSE)
+
+plot(xgbm,ylim=c(0.7,0.99))
+```
+
+No hay apenas variación con el número de iteraciones así que se confirma 3000 como parámetro a emplear.
+
+También se va a revisar la importancia de las 11 variables por si se pudiera prescindir de alguna antes de ir con la validación cruzada:
+
+```{r}
+varImp(xgbm)
+plot(varImp(xgbm))
+```
+
+Algunas como FAF.3, NCP.3 y SCC.no no tienen mucha importancia en el modelo. Se excluirán y se probarán 2 modelos de xgboost, uno incluyendo esas variables y otro sin las mismas.
+
+Finalizamos con la validación cruzada comparando con el resto de algoritmos:
+
+```{r}
+source ("cruzada xgboost binaria.R")
+set.seed(12345)
+
+medias_xgbm1 <- cruzadaxgbmbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    min_child_weight = 5,
+    eta = 0.10,
+    nrounds = 3000,
+    max_depth = 6,
+    gamma = 0,
+    colsample_bytree = 1,
+    subsample = 1,
+    alpha = 0,
+    lambda = 0,
+    lambda_bias = 0
+)
+
+medias_xgbm1$modelo<-"xgbm1"
+
+######################################
+
+listconti2<-listconti[-c(5,11,7)]
+
+medias_xgbm2 <- cruzadaxgbmbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti2,
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    min_child_weight = 5,
+    eta = 0.10,
+    nrounds = 3000,
+    max_depth = 6,
+    gamma = 0,
+    colsample_bytree = 1,
+    subsample = 1,
+    alpha = 0,
+    lambda = 0,
+    lambda_bias = 0
+)
+
+medias_xgbm2$modelo<-"xgbm2"
+
+union1<-rbind(medias1,medias2,medias3,medias4,medias_gbm, medias_xgbm1, medias_xgbm2)
+
+par(cex.axis=0.4)
+boxplot(data=union1,tasa~modelo,main="TASA FALLOS",col="pink")
+boxplot(data=union1,auc~modelo,main="AUC",col="pink")
+
+```
+
+Observamos que xgbm y gbm se encuentran un peldaño por debajo del resto de modelos, pero con un desempeño muy superior aún a la regresión logística. El xgboost eliminando variables se queda muy descolgado y no parece compensar la omisión de variables con la pérdida de poder explicativo, por lo que se preferirá el primero que incluye las 11.
+
+
+# 6.Tuneado de algoritmos (SVM)
+
+## 6.1 Tuneado de C, SVM lineal
+
+A lo largo de este apartado se irán ejecutando las distintas variantes de SVM para ir encontrando los parámetros óptimos en cada una de ellas. Podría adelantarse que el SVM lineal no va a ser de los mejores, pues la relación que se explora no es lineal y sus otras 2 variantes se adaptan mejor a esas relaciones.
+
+El primero será el SVM lineal para encontrar el parámetro C, siendo este el único a incluir en el grid del tunning. Una vez ejecutada esta parte orientativa para tener una idea de su rango, se procederá posteriormente a afinar más los valores:
+
+```{r}
+set.seed(12345)
+SVMgrid<-expand.grid(C=c(0.01,0.05,0.1,0.2,0.5,1,2,5,10))
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all") 
+
+SVM<- train(data=dfbis2,factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+  method="svmLinear",trControl=control,
+ tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM
+SVM$results
+plot(SVM$results$C,SVM$results$Accuracy)
+```
+
+Para todos los valores de C hay una igualdad total en la accuracy con lo que se intenta tunear con valores más elevados:
+
+```{r}
+set.seed(12345)
+SVMgrid<-expand.grid(C=c(50,100,200,500,700,1000))
+
+control<-trainControl(method = "cv",number=4,savePredictions = "all") 
+
+SVM<- train(data=dfbis2,factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+  method="svmLinear",trControl=control,
+ tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM
+SVM$results
+plot(SVM$results$C,SVM$results$Accuracy)
+```
+
+Los resultados son prácticamente idénticos independientemente del valor de C, excepto a partir de 1000 donde empieza a decaer la accuracy, así que se toma el propuesto inicialmente por caret de 0.05.
+
+## 6.2 Tuneado de C y degree, svm polinomial
+
+Con el SVM polinomial se buscarán los valores óptimos para C y degree:
+
+```{r}
+SVMgrid<-expand.grid(C=c(0.01,0.05,0.1,0.2,0.5,1,2,5,10),
+degree=c(2,3),scale=c(0.1,0.5,1,2,5))
+
+control<-trainControl(method = "cv",
+ number=4,savePredictions = "all") 
+
+
+SVM<- train(data=dfbis2,factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+  method="svmPoly",trControl=control,
+ tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM
+
+SVM$results
+```
+
+Para representar y sacar conclusiones se usa la librería ggplot2:
+
+```{r}
+dat<-as.data.frame(SVM$results)
+
+ggplot(dat, aes(x=factor(C), y=Accuracy, 
+ color=factor(degree),pch=factor(scale))) +
+  geom_point(position=position_dodge(width=0.5),size=3)
+```
+
+Es claro que los puntos del polinomio con grado 3 se encuentran por encima del grado 2 y, por tanto, son mejores. Para ver el comportamiento de scale sólo en el de grado 3:
+
+```{r}
+dat2<-dat[dat$degree==3,]  
+ 
+ggplot(dat2, aes(x=factor(C), y=Accuracy, 
+ colour=factor(scale))) +
+  geom_point(position=position_dodge(width=0.5),size=3)
+```
+
+Con el gráfico se pueden sacar las siguientes conclusiones:
+
+-Con scale=0.1 la accuracy presenta un máximo en C=5 para posteriormente decaer.
+
+-Con scale=5, el modelo es bueno con C pequeñas, pero empeora mucho a medida que aumentan.
+
+-Con scale=0.5 se comporta constante situándose el máximo en C=0.2
+
+Dada la tendencia general de los puntos, lo idóneo sería fijar un C=5 con un scale 0.1.
+
+## 6.3 Tuneado de C y sigma, SVM RBF
+
+Con esta última variante del SVM radial se tuneará de nuevo el parámetro C y también el sigma:
+
+```{r}
+SVMgrid<-expand.grid(C=c(0.01,0.05,0.1,0.2,0.5,1,2,5,10),
+ sigma=c(0.01,0.05,0.1,0.2,0.5,1,2,5,10,30))
+
+control<-trainControl(method = "cv",
+ number=4,savePredictions = "all") 
+
+
+SVM<- train(data=dfbis2,factor(Obesity_Y_N)~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,
+  method="svmRadial",trControl=control,
+ tuneGrid=SVMgrid,verbose=FALSE)
+
+SVM
+
+dat<-as.data.frame(SVM$results)
+```
+
+Para visualizar los resultados:
+
+```{r}
+ggplot(dat, aes(x=factor(C), y=Accuracy, 
+ color=factor(sigma)))+ 
+ geom_point(position=position_dodge(width=0.5),size=3)
+```
+
+Todas las representaciones muestran una parábola creciente conforme se aumenta C hasta estabilizarse a partir de 1. El máximo se encuentra en C=5 y sigma=10, valores indicados por el propio caret, así que se tomarán estos para la validación cruzada.
+
+## 6.5 Comparación cv repetida y boxplot
+
+Se comparan todas las variantes de SVM construidas con los valores óptimos junto a los anteriores algoritmos:
+
+```{r}
+source ("cruzada SVM binaria lineal.R")
+source ("cruzada SVM binaria polinomial.R")
+source ("cruzada SVM binaria RBF.R")
+
+medias_svm_lineal <- cruzadaSVMbin(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    C = 0.05
+)
+
+medias_svm_lineal$modelo="SVM"
+
+##################################
+
+medias_svm_poli <- cruzadaSVMbinPoly(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    C = 5,
+    degree = 3,
+    scale = 0.1
+)
+
+medias_svm_poli$modelo="SVMPoli"
+
+##################################
+
+medias_svm_radial<- cruzadaSVMbinRBF(
+    data = dfbis2,
+    vardep = "Obesity_Y_N",
+    listconti = listconti,
+    listclass = c(""),
+    grupos = 4,
+    sinicio = 1234,
+    repe = 5,
+    C = 5,
+    sigma = 10
+)
+
+medias_svm_radial$modelo="SVMRBF"
+
+```
+
+Visualización de todos ellos:
+
+```{r}
+union1<-rbind(medias1,medias2,medias3,medias4,medias_gbm, medias_xgbm1, medias_xgbm2, medias_svm_lineal,medias_svm_poli,medias_svm_radial)
+
+uni<-union1
+uni$modelo <- with(uni,
+ reorder(modelo,tasa, median))
+par(cex.axis=0.4,las=2)
+boxplot(data=uni,tasa~modelo,col="pink",main="TASA FALLOS")
+
+uni<-union1
+uni$modelo <- with(uni,
+ reorder(modelo,auc, median))
+par(cex.axis=0.4,las=2)
+boxplot(data=uni,auc~modelo,col="pink",main="AUC")
+```
+
+De los algoritmos alternativos a la regresión logística, los SVM son los que peor desempeño muestran, situándose como los que menor AUC tienen y, además, por detrás de la regresión logística teniendo en cuenta la preferencia siempre por modelos clásicos.
+
+De esta manera, el bagging, random forest, avnnet y gradient boosting se perfilan como los modelos con mayor precisión y muy baja varianza para poder predecir.
+
+
+# 7.Ensamblado
+
+Como complemento a las elecciones de modelos anteriores, se realizará un ejercicio de ensamblado entre los 4 mejores modelos según la validación cruzada general entre todos. Esto es, se unirán bagging, random forest, avnnet y gradient boosting.
+
+```{r}
+formula1<-as.formula(paste("factor(","Obesity_Y_N",")","~."))
+dfbis2$Obesity_Y_N<-as.factor(dfbis2$Obesity_Y_N)
+
+levels(dfbis2$Obesity_Y_N) <-make.names(levels(factor(dfbis2$Obesity_Y_N)))
+
+set.seed(3005)
+repeticiones=10
+
+stackControl <- trainControl(method="repeatedcv", 
+ number=4, repeats=repeticiones, savePredictions=TRUE, classProbs=TRUE)
+```
+
+Se especifican los parámetros de los grid para cada uno de los modelos a ensamblar utilizando los parámetros óptimos en los que son tuneables:
+
+```{r}
+gbmGrid <- expand.grid(n.trees = c(3000),
+  interaction.depth = c(2), shrinkage =c(0.1), n.minobsinnode = c(10))
+
+rfGrid <- expand.grid(mtry=c(8))
+bagGrid <- expand.grid(mtry=c(11))
+
+avnnetgrid <-expand.grid(size=c(11),
+                         decay=c(0.001),bag=FALSE)
+
+```
+
+A continuación se especifica la lista de tuneos y se muestra la lista con los resultados y los pesos que se otorgan a cada uno de los algoritmos:
+
+```{r}
+set.seed(3005)
+
+models <- caretList(Obesity_Y_N~., data=dfbis2, trControl=stackControl,
+tuneList=list(
+ parrf=caretModelSpec(method="rf",maxnodes=30,
+ n.trees = 2000,nodesize=10,sampsize=1100,tuneGrid=rfGrid),
+ gbm=caretModelSpec(method="gbm",tuneGrid=gbmGrid),
+ bagging=caretModelSpec(method="rf",maxnodes=30,
+ n.trees = 2000,nodesize=10,sampsize=1100,tuneGrid=rfGrid),
+ avnnet=caretModelSpec(method="avNNet", tunegrid=avnnetgrid)
+ ))
+
+results <- resamples(models)
+summary(results)
+dotplot(results)
+
+modelCor(results)
+splom(results)
+results[[2]]
+
+ense <- caretEnsemble(models)
+
+summary(ense)
+
+```
+
+También se realiza la validación cruzada para comprobar si es óptimo llevar a cabo el ensamblado:
+
+```{r}
+source("cruzadas ensamblado binaria fuente.R")
+
+set.seed(12345)
+
+archivo<-dfbis2
+
+vardep<-"Obesity_Y_N"
+listconti<-listconti
+listclass<-c("")
+grupos<-4
+sinicio<-1234
+repe<-5
+```
+
+A continuación, se crean los modelos con los parámetros óptimos ya fijados para ensamblar y obtener las predicciones:
+
+```{r}
+medias1 <- cruzadalogistica(
+    data = archivo,
+    vardep = vardep,
+    listconti = listconti,
+    listclass = listclass,
+    grupos = grupos,
+    sinicio = sinicio,
+    repe = repe
+)
+
+medias1bis<-as.data.frame(medias1[1])
+medias1bis$modelo<-"Logistica"
+predi1<-as.data.frame(medias1[2])
+predi1$logi<-predi1$Yes
+
+###########################################
+
+medias2 <- cruzadaavnnetbin(
+    data = archivo,
+    vardep = vardep,
+    listconti = listconti,
+    listclass = listclass,
+    grupos = grupos,
+    sinicio = sinicio,
+    repe = repe,
+    size = c(11),
+    decay = c(0.001),
+    repeticiones = 5,
+    itera = 100
+)
+
+medias2bis<-as.data.frame(medias2[1])
+medias2bis$modelo<-"avnnet"
+predi2<-as.data.frame(medias2[2])
+predi2$avnnet<-predi2$Yes
+
+###########################################
+
+medias3 <- cruzadarfbin(
+    data = archivo,
+    vardep = vardep,
+    listconti = listconti,
+    listclass = listclass,
+    grupos = grupos,
+    sinicio = sinicio,
+    repe = repe,
+    mtry = 8,
+    ntree = 2000,
+    nodesize = 10,
+    replace = TRUE
+)
+
+
+medias3bis<-as.data.frame(medias3[1])
+medias3bis$modelo<-"rf"
+predi3<-as.data.frame(medias3[2])
+predi3$rf<-predi3$Yes
+
+###########################################
+
+medias4 <- cruzadagbmbin(
+    data = archivo,
+    vardep = vardep,
+    listconti = listconti,
+    listclass = listclass,
+    grupos = grupos,
+    sinicio = sinicio,
+    repe = repe,
+    n.minobsinnode = 10,
+    shrinkage = 0.1,
+    n.trees = 3000,
+    interaction.depth = 2
+)
+
+medias4bis<-as.data.frame(medias4[1])
+medias4bis$modelo<-"gbm"
+predi4<-as.data.frame(medias4[2])
+predi4$gbm<-predi4$Yes
+
+###########################################
+
+medias5 <- cruzadarfbin(
+    data = archivo,
+    vardep = vardep,
+    listconti = listconti,
+    listclass = listclass,
+    grupos = grupos,
+    sinicio = sinicio,
+    repe = repe,
+    mtry = 11,
+    ntree = 2000,
+    nodesize = 10,
+    replace = TRUE
+)
+
+
+medias5bis<-as.data.frame(medias5[1])
+medias5bis$modelo<-"bagi"
+predi5<-as.data.frame(medias5[2])
+predi5$bagi<-predi5$Yes
+```
+
+Y una vez más se representan los boxplots para fallos y AUC:
+
+```{r}
+union1<-rbind(medias1bis,medias2bis,
+              medias3bis,medias4bis,medias5bis)
+
+par(cex.axis=0.8)
+boxplot(data=union1,tasa~modelo,col="pink",main='TASA FALLOS')
+boxplot(data=union1,auc~modelo,col="pink",main='AUC')
+```
+
+Acorde a lo que se ha ido viendo a lo largo del trabajo, la logística es el peor modelo comparado con los más avanzados.
+
+Se crean los ensamblados:
+
+```{r}
+unipredi<-cbind(predi1,predi2,predi3,predi4,predi5)
+unipredi<- unipredi[, !duplicated(colnames(unipredi))]
+
+unipredi$predi6<-(unipredi$logi+unipredi$avnnet)/2
+unipredi$predi7<-(unipredi$logi+unipredi$rf)/2
+unipredi$predi8<-(unipredi$logi+unipredi$gbm)/2
+unipredi$predi9<-(unipredi$avnnet+unipredi$rf)/2
+unipredi$predi10<-(unipredi$avnnet+unipredi$gbm)/2
+unipredi$predi11<-(unipredi$rf+unipredi$gbm)/2
+unipredi$predi12<-(unipredi$logi+unipredi$bagi)/2
+unipredi$predi13<-(unipredi$avnnet+unipredi$bagi)/2
+unipredi$predi14<-(unipredi$rf+unipredi$bagi)/2
+unipredi$predi15<-(unipredi$gbm+unipredi$bagi)/2
+
+unipredi$predi16<-(unipredi$logi+unipredi$avnnet+unipredi$bagi)/3
+unipredi$predi17<-(unipredi$logi+unipredi$avnnet+unipredi$rf)/3
+unipredi$predi18<-(unipredi$logi+unipredi$avnnet+unipredi$gbm)/3
+unipredi$predi19<-(unipredi$logi+unipredi$rf+unipredi$gbm)/3
+unipredi$predi20<-(unipredi$logi+unipredi$gbm+unipredi$bagi)/3
+unipredi$predi21<-(unipredi$avnnet+unipredi$gbm+unipredi$bagi)/3
+unipredi$predi22<-(unipredi$rf+unipredi$gbm+unipredi$bagi)/3
+
+unipredi$predi23<-(unipredi$logi+unipredi$rf+unipredi$gbm+unipredi$avnnet)/4
+unipredi$predi24<-(unipredi$logi+unipredi$rf+unipredi$avnnet+unipredi$bagi)/4
+unipredi$predi25<-(unipredi$logi+unipredi$rf+unipredi$gbm+unipredi$bagi)/4
+
+unipredi$predi26<-(unipredi$logi+unipredi$rf+unipredi$gbm+unipredi$avnnet+unipredi$bagi)/5
+```
+
+Se construye el promedio de la tasa de fallos y AUC para cada repetición de CV así como las funciones tasafallos y auc para aplicarlo a cada repetición:
+
+```{r}
+listado<-c("logi", "bagi", "avnnet", "rf","gbm","predi6", "predi7", "predi8", "predi9", "predi10", "predi11", "predi12", "predi13", "predi14", "predi15", "predi16","predi17", "predi18", "predi19", "predi20", "predi21","predi22", "predi23", "predi24", "predi25", "predi26")
+
+tasafallos<-function(x,y) {
+  confu<-confusionMatrix(x,y)
+  tasa<-confu[[3]][1]
+  return(tasa)
+}
+
+auc<-function(x,y) {
+  curvaroc<-roc(response=x,predictor=y)
+  auc<-curvaroc$auc
+  return(auc)
+}
+
+repeticiones<-nlevels(factor(unipredi$Rep))
+unipredi$Rep<-as.factor(unipredi$Rep)
+unipredi$Rep<-as.numeric(unipredi$Rep)
+
+
+medias0<-data.frame(c())
+for (prediccion in listado)
+{
+  unipredi$proba<-unipredi[,prediccion]
+  unipredi[,prediccion]<-ifelse(unipredi[,prediccion]>0.5,"Yes","No")
+  for (repe in 1:repeticiones)
+  {
+    paso <- unipredi[(unipredi$Rep==repe),]
+    pre<-factor(paso[,prediccion])
+    archi<-paso[,c("proba","obs")]
+    archi<-archi[order(archi$proba),]
+    obs<-paso[,c("obs")]
+    tasa=1-tasafallos(pre,obs)
+    t<-as.data.frame(tasa)
+    t$modelo<-prediccion
+    auc<-suppressMessages(auc(archi$obs,archi$proba))
+    t$auc<-auc
+    medias0<-rbind(medias0,t)
+  }
+}
+
+```
+
+Y ahora se representan los boxplots de la tasa de fallos y auc de todas las combinaciones ordenadas:
+
+```{r}
+medias0$modelo <- with(medias0,
+                       reorder(modelo,tasa, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,tasa~modelo,col="pink", main='TASA FALLOS')
+
+#############################################
+
+medias0$modelo <- with(medias0,
+                       reorder(modelo,auc, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,auc~modelo,col="pink", main='AUC')
+```
+
+Con los resultados presentes en ambos gráficos se extraen las siguientes conclusiones:
+
+- La regresión logística, a pesar de ofrecer un excelente resultado tanto en tasa de fallos como AUC, es el peor de los modelos con mucha diferencia.
+
+- Los algoritmos "simples" más efectivos son random forest, bagging y gradient boosting.
+
+- El ensamblado que mayor AUC proporciona es el 21, resultado de la unión entre avnnet, gradient boosting y bagging. No obstante, la diferencia respecto a algoritmos más interpretables como el rf es inferior al 2% en cuanto al AUC con lo que no compensa su elección por encima de este.
+
+- La tasa de fallos y AUC son bastante coherentes con los resultados en cuanto a que el AUC es superior en los modelos con menor tasa de fallos.
+
+Para finalizar el apartado de ensamblado, se visualizará el comportamiento de los 2 mejores algoritmos, rf y gbm (para no escoger bagging que es muy similar al propio rf):
+
+```{r}
+unipredi<-cbind(predi1,predi2,predi3,predi4,predi5)
+unipredi$predi11<-(unipredi$rf+unipredi$gbm)/2
+unipredi$predi21<-(unipredi$avnnet+unipredi$gbm+unipredi$bagi)/3
+unipredi$predi23<-(unipredi$logi+unipredi$rf+unipredi$gbm+unipredi$avnnet)/4
+unipredi$predi26<-(unipredi$logi+unipredi$rf+unipredi$gbm+unipredi$avnnet+unipredi$bagi)/5
+
+unipredi<- unipredi[, !duplicated(colnames(unipredi))]
+
+unigraf<-unipredi[unipredi$Rep=="Rep1",]
+
+qplot(logi,rf,data=unigraf,colour=obs)+
+  geom_hline(yintercept=0.5, color="black", size=1)+
+  geom_vline(xintercept=0.5, color="black", size=1)
+```
+
+En el gráfico se puede ver con claridad que la distribución de las variables no es para nada lineal y se concentran muchos puntos tanto en el origen como en 1 en los ejes de probabilidades. La distribución de los puntos marcados como yes or no correctamente es prácticamente igual en ambas, pero yendo a las discrepancias, en el cuadrante arriba-izquierda se ve que el random forest no clasifica tantas observaciones como No, a diferencia de la logística que si presenta una mayor mezcla entre puntos marcados como No cuando deberían ser Yes en el cuadrante inferior derecho.
+
+Por probar otra combinación comparando bagging con el mejor ensamblado:
+
+```{r}
+qplot(bagi,predi21,data=unigraf,colour=obs)+
+  geom_hline(yintercept=0.5, color="black", size=1)+
+  geom_vline(xintercept=0.5, color="black", size=1)
+```
+
+Estos dos por ejemplo son muy parecidos, pues no hay apenas puntos en los cuadrantes de discrepancia y las clasificaciones Yes/No siguen siendo muy acertadas.
+
+# 8. AutoML
+
+Para terminar con el trabajo y antes de llegar a las conclusiones, se probará el uso de la librería h2O, concretamente se usará su funcionalidad AutoML para comparar automáticamente algoritmos y elegir el mejor modelo.
+
+Primero se activa h2o:
+
+```{r}
+h2o.init()
+```
+
+Y se indica que busque los mejores algoritmos sobre el conjunto de datos dfbis2 una vez ya han sido seleccionadas las 11 variables que se escogieron al comienzo del trabajo, conformando el dataframe dfbis3 y convirtiendo la variable dependiente del objeto train a factor. Se fijan los parámetros seed y exclude_algos para garantizar reproducibilidad, pues si no, cada vez se generan distintos modelos con diferencias en el accuracy y su orden en la tabla de resultados:
+
+```{r}
+start_time<-Sys.time()
+dfbis3<-dfbis2 %>% select(all_of(listconti))
+train<- as.h2o(dfbis3)
+train[,11]<-as.factor(train[,11])
+
+aml<-h2o.automl(x = 1:10,y=11,training_frame = train,max_models=10,seed=12345,
+keep_cross_validation_predictions = TRUE, nfolds=4, exclude_algos = "DeepLearning")
+
+end_time<-Sys.time()
+end_time-start_time
+```
+
+Se muestran los mejores modelos y el ganador de ellos:
+
+```{r}
+lb <- aml@leaderboard
+print(lb, n = nrow(lb)) # Print all rows instead of default (6 rows)
+aml@leader
+```
+
+Los mejores modelos generados por AutoML ofrecen un AUC del entorno del 0.8, métrica que permite conocer más o menos cuál es la precisión que se puede llegar a conseguir para tomarla como base y a partir de ahí modificarlos y mejorar el desempeño.
+
+El mejor modelo se trata de un ensamblado:
+
+```{r}
+modelo<-h2o.getModel(aml@leader@model_id)
+modelo@model$base_models
+```
+
+Gran parte de los algoritmos que lo componen son gradient boosting y, como apenas hay diferencia entre el AUC que ofrece y el AUC del 3º mejor modelo (también GBM), se inspeccionará este segundo por mayor simplicidad:
+
+```{r}
+leaders<-as.data.frame(aml@leaderboard)
+modelo2<-h2o.getModel(leaders[3,1])
+modelo2@allparameters
+```
+
+De todos los parámetros, se extrae que el ganador emplea 46 ntrees, una learning rate de 0.1, min_rows =1, sample_rate=0.8 y col_sample_rate=0.8 también.
+
+La herramienta es bastante útil para obtener una aproximación de lo que se puede esperar, pero después es necesario ir probando con los grid y parámetros para optimizarlo.
+
+Una vez terminado, se cerraría la conexión con h2o, pero como solicita confirmación, al hacer knit se omite este paso:
+
+```{r}
+# h2o.shutdown()
+```
+
+
+# 9. Análisis, decisiones y conclusiones.
+
+## 9.1. Elección del modelo a emplear
+
+Recordando los boxplots con la tasa de fallos y auc con los mejores modelos y ensamblados:
+
+```{r}
+medias0$modelo <- with(medias0,
+                       reorder(modelo,tasa, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,tasa~modelo,col="pink", main='TASA FALLOS')
+
+#############################################
+
+medias0$modelo <- with(medias0,
+                       reorder(modelo,auc, mean))
+par(cex.axis=0.7,las=2)
+boxplot(data=medias0,auc~modelo,col="pink", main='AUC')
+```
+
+El modelo escogido para clasificar será un **Gradient Boosting (GBM)** porque, basándose puramente en el criterio AUC, no es de los más elevados pero su diferencia respecto al mejor no supera el 2%. Sin embargo, por parte de la tasa de fallos, este presenta muy poca varianza y queda patente en el gráfico con la nube de puntos empleado hace 2 apartados, pues casi no hay incorrecciones.
+
+La logística queda descartada por no acercarse prácticamente al genial comportamiento de los demás algoritmos.
+
+## 9.2. Matriz de confusión y comentarios sobre medidas de precisión
+
+Para responder a este apartado y los siguientes se cargará una función que muestra la matriz de confusión y todas las métricas solicitadas tomando como input el algoritmo con los mejores parámetros después de haberlos creado y comparado con los grid:
+
+```{r}
+source("funcion resultadosgbm.R")
+set.seed(123)
+resultado<-resultadosgbm(dataf=dfbis2, vardep="Obesity_Y_N", shrink = 0.1, n.trees = 3000, n.minobsinnode = 10, corte = 0.5)
+```
+
+La matriz de confusión sería la siguiente:
+
+```{r}
+confu<-confusionMatrix(resultado$pred,resultado$obs)
+confu$table
+```
+
+De ella se extrae que con el algoritmo GBM, se marcan como Yes 113 observaciones que en realidad son No y se marcan como No 90 observaciones que en realidad son Yes. Esto traducido a medidas de performance quedaría como:
+
+```{r}
+confu
+```
+
+La sensitividad o capacidad de detectar positivos cuando realmente lo son es de un 91%.
+La especificidad o capacidad de detectar negativos cuando realmente lo son es de un 90%.
+El AUC o área bajo la curva es de un 95%, un valor muy cercano a 1 y que denota un muy buen ajuste al problema de clasificación.
+
+Atendiendo también a las medidas de falsos positivos, falsos negativos y sus respectivos verdaderos, es claro que el algoritmo ajusta muy bien el problema planteado y es capaz de asignar correctamente la mayoría de las veces el que una persona sea obesa o no.
+
+## 9.3. Comparación con la regresión logística.
+
+En este apartado final se obtendrán los resultados que ofrecería el empleo de la regresión logística en vez de gradient boosting:
+
+```{r}
+source("funcion resultadosglm.R")
+
+set.seed(123)
+resultado<-resultadosglm(dataf=dfbis2, vardep="Obesity_Y_N",corte = 0.5)
+
+confu<-confusionMatrix(resultado$pred,resultado$obs)
+confu$table
+
+confu
+```
+
+Los valores de todas las métricas están por debajo de los obtenidos por GLM, aún incluyendo para el cálculo todas las variables al igual que en el caso anterior. Se crea también un modelo empleando las 11 variables más importantes que se escogieron por remuestreo:
+
+```{r}
+control<-trainControl(method = "cv",number=4,savePredictions = "all",classProbs=TRUE)
+
+glm <- train(Obesity_Y_N~family_history_with_overweight.yes+FAVC.no+NCP.4+FCVC.3+SCC.no+CH2O.2+FAF.3+CAEC.Frequently+MTRANS.Public_Transportation+Age+NCP.3,data=dfbis2,trControl=control,method="glm",family = binomial(link="logit"))
+
+summary(glm)
+```
+
+Por comentar alguno de los signos en los coeficientes del modelo, los negativos son aquellos que restarían probabilidades a la decisión final de que una observación fuera identificada como Obesa o no. Por ejemplo, FAVC.no implica que el no consumo de comida basura reduce casi el doble la probabilidad de padecer obesidad respecto a alguien que sí la consume. Del mismo modo, FAF3, la actividad física frecuente, implica una reducción de la probabilidad en obesidad. Por otro lado, la edad y el tener familia con sobrepeso la incrementan.
+
+SU matriz de confusion es:
+
+```{r}
+predic<-glm$pred
+confusionMatrix(predic$pred, predic$obs)
+```
+
+En general el modelo presenta mucha menor calidad que el obtenido con glm, viéndose reducidos los parámetros de AUC, sensitividad y especificidad lo que resulta en un mayor número de falsos positivos y negativos.
+
+# Adicional: Visualización con visualpred:
+
+Se terminará representando un par de gráficos empleando el paquete visualpred para ver cómo se adapta el algoritmo a identificar ocurrencias Yes or No en obesidad:
+
+```{r}
+dataf<-dfbis2
+listconti=listconti
+listclass=c("")
+vardep="Obesity_Y_N"
+result<-famdcontour(dataf=dataf,listconti,listclass,vardep,title="FAMD Plots",modelo = "glm", ntreegbm = 3000, shrink = 0.1, n.minobsinnode = 10 )
+result[[1]]
+```
+
+```{r}
+result[[2]]
+```
+
+

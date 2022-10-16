@@ -1,0 +1,470 @@
+---
+title: "Trabajo Módulo 12: Pump it Up Data Mining the Water Table"
+author: "Diego Maquedano Pedrero"
+date: "Abril 2022"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.align='center',
+                      echo=TRUE)
+```
+
+Antes de comenzar con los enunciados y el proyecto en sí, se comprueban si las distintas librerías que van a emplearse están instaladas para, en caso contrario, proceder a ello:
+
+```{r}
+comprobar <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE, repos = "http://cran.us.r-project.org")
+    sapply(pkg, require, character.only = TRUE)
+}
+paquetes<-c("e1071","caret","MASS","dummies","naniar",
+            "nnet","NeuralNetTools","ggplot2","plotly","dplyr",
+            "data.table","reshape","pROC","reshape2","rpart", "rpart.plot",
+            "resample","randomForest","rattle","gbm","xgboost","caretEnsemble","parallel","doParallel","visualpred","plyr","arm","ggpubr")
+
+comprobar(paquetes)
+```
+
+# 1. Presentación de los datos
+
+## 1.1 Origen del dataset y número de observaciones y variables
+
+El conjunto de datos usado para este trabajo procede del repositorio UCI al cual he accedido mediante el [ENLACE](https://archive.ics.uci.edu/ml/datasets/Estimation+of+obesity+levels+based+on+eating+habits+and+physical+condition+) presente en el archivo de texto incluido en los apuntes.
+
+Primero se procede a cargar el archivo almacenándolo en un dataframe:
+
+```{r}
+df<-read.csv("ObesityData.csv", sep = ",")
+#save(df, file = "obesity.rda")
+```
+
+El dataset escogido contiene información sobre el nivel de obesidad presente en población de México, Perú y Colombia basándose en los hábitos alimentarios y la práctica de deporte. De esta manera, nos encontramos un dataset con 2111 obervaciones y
+17 variables:
+
+```{r}
+str(df)
+```
+
+## 1.2 Descripción de las variables
+
+Cada una de las varibales significa lo siguiente:
+
+* **Gender**: Es una variable binaria que muestra el género de la observación.
+
+* **Age**: Variable numérica que muestra la edad en años.
+
+* **Height**: Variable numérica que muestra la altura en metros.
+
+* **Weight**: Variable numérica que muestra el peso en kilogramos.
+
+* **family_history_with_overweight**: Variable binaria que toma el valor "yes" si en la familia del individuo hay casos de obesidad y "no" en caso contrario.
+
+* **FAVC - **: Variable binaria que toma el valor "yes" si hay un consumo frecuente de comida basura y "no" en caso contrario.
+
+* **FCVC**: Variable cualitativa que muestra la frecuencia del consumo de vegetales siendo el valor máximo 3 y mínimo 1.
+
+* **NCP**: Variable cualitativa que muestra el número de comidas principales hechas en el día siendo el valor máximo 3 y mínimo 1.
+
+* **CAEC**: Variable cualitativa que muestra la ingesta de alimentos entre comidas tomando como valores "no", Sometimes", "Frequently" y "Always".
+
+* **SMOKE**: Variable binaria que toma el valor "yes" si hay un consumo de tabaco y "no" en caso contrario.
+
+* **CH2O**: Variable cualitativa que muestra la frecuencia en el consumo diario de agua siendo el valor máximo 3 y mínimo 1.
+
+* **SCC**: Variable binaria que toma el valor "yes" si hay un control sobre el total de calorías ingeridas y "no" en caso contrario.
+
+* **FAF**: Variable cualitativa que muestra la frecuencia en la práctica de ejercicio físico siendo el valor máximo 3 y mínimo 1.
+
+* **TUE**: Variable cualitativa que muestra la frecuencia en el uso de dispositivos electrónicos siendo "0" nada y "3" muy frecuente.
+
+* **CALC**: Variable cualitativa que muestra el consumo de alcohol tomando como valores "no", Sometimes", "Frequently" y "Always".
+
+* **MTRANS**: Variable cualitativa que muestra el medio de transporte más utilizado tomando como valores "Automobile", Bike", "Motorbike", "Public_Transportation" y "Walking".
+
+* **NObeyesdad**: Variable cualitativa que muestra el estado de peso de la persona, tomando valores como "Normal", "Overweight" y "Obesity" junto con sus subtipos. Esta será transformada para dar lugar a la variable binaria de interés.
+
+La variable objetivo será pues **Obesity_Y_N** y se generará artificialmente para indicar únicamente si la persona presenta alguno de los 3 tipos de obesidad o no. Tomará el valor 1 si esto ocurre y 0 en caso contrario:
+
+```{r}
+df<- df %>% mutate(NObeyesdad=ifelse(NObeyesdad=="Obesity_Type_I"|
+                                       NObeyesdad=="Obesity_Type_II"|
+                                       NObeyesdad=="Obesity_Type_III", "Yes","No")) %>% dplyr::rename(Obesity_Y_N=NObeyesdad)
+```
+
+## 1.3 Depuración de las variables
+
+Antes de continuar con las representaciones gráficas para observar distribuciones, se estandarizarán las variables continuas, se evaluará la presencia de datos faltantes y se convertirán variables categóricas a dummies. Además, las variables numéricas relacionadas con frecuencias y Age se importan con una serie de números decimales que no corresponden, por lo que en estas se redondearán a número entero antes de convertirlas también a dummies:
+
+```{r}
+length(unique(df$FCVC))
+```
+
+No debería haber 810 valores distintos sino 3 así que se redondean a 0 decimales. También se guarda una copia del dataset sin estandarizar ni llevar a cabo otras transformaciones para posteriormente representar gráficamente algunas de las variables:
+
+```{r}
+df$Age<-round(df$Age,0)
+df$FCVC<-round(df$FCVC,0)
+df$NCP<-round(df$NCP,0)
+df$CH2O<-round(df$CH2O,0)
+df$FAF<-round(df$FAF,0)
+df$TUE<-round(df$TUE,0)
+df_rep<-df
+```
+
+Pasando a la estandarización, esta se aplicará sobre las variables continuas Age, Weight y Height creando primero vectores para estas variables, las categóricas y la dependiente:
+
+```{r}
+listconti<-c("Weight","Height","Age")
+listclass<-c("Gender", "family_history_with_overweight", 
+"FAVC", "FCVC", "NCP", "CAEC", "SMOKE", "CH2O", "SCC", "FAF", 
+"TUE", "CALC", "MTRANS")
+vardep<-"Obesity_Y_N"
+```
+
+Ahora se generan los vectores de medias y desviaciones típicas para aplicar la estandarización y formar el nuevo dataset:
+
+```{r}
+means <-apply(df[,listconti],2,mean,na.rm=TRUE)
+sds<-sapply(df[,listconti],sd,na.rm=TRUE)
+
+df2<-scale(df[,listconti], center = means, scale = sds)
+
+numerocont<-which(colnames(df)%in%listconti)
+df<-cbind(df2,df[,-numerocont,drop=FALSE])
+```
+
+Respecto a la existencia de datos faltantes, esta se puede comprobar con:
+
+```{r}
+sum(is.na(df))
+gg_miss_var(df)
+```
+
+Y vemos que el total de datos faltantes para este dataset es 0, información que puede contrastarse en el gráfico que no presenta ningún valor para esta tipología.
+
+Finalmente, ya se pueden tratar las variables categóricas para pasarlas a dummy y eliminar las menos representadas (en caso de que las haya) para evitar sobreajuste.
+
+Lo primero será obtener una tabla con las frecuencias para cada una de estas variables:
+
+```{r}
+frecu<-ldply(df[,listclass],function(x) t(rbind(names(table(x)),table(x))))
+names(frecu)<-c("variable","nivel","frecuencia")
+frecu$frecuencia<-as.numeric(frecu$frecuencia)
+frecu
+```
+
+Se puede observar que algunas variables como las que representan el picoteo entre horas o el consumo de tabaco tienen valores con frecuencias muy inferiores al resto de categorías. En el resto, casi todas suelen superar las 100 observaciones, por lo que se fijará este como límite para descartar aquellas con menos de ese número.
+
+Antes de hacer modificaciones se crea un nuevo archivo nuevo por si fuera necesario usar posteriormente las variables originales:
+
+```{r}
+dfbis<-dummy.data.frame(df, listclass, sep = ".")
+```
+
+Se obtienen las variables con menos de 100 observaciones para proceder a su eliminación:
+
+```{r}
+frecu100<-frecu[frecu$frecuencia<100,]
+frecu100$dum<-paste(frecu100$variable,frecu100$nivel,sep=".")
+listamal<-dput(frecu100$dum)
+dfbis[,listamal]<-NULL
+```
+
+## 1.4 Número de observaciones de la variable objetivo
+
+Tal como se menciona en el enunciado de la tarea, el número mínimo de observaciones para la clase minoritaria debería ser de 100. Además, sería conveniente que la división no resulte muy pareja:
+
+```{r}
+table(dfbis$Obesity_Y_N)
+```
+
+Con esta comprobación, se ve que la clase minoritaria es el de las personas con algún tipo de obesidad (972) y la mayoritaria es el de las personas sin ella (1139). Con ello se cumplen los requisitos para poder continuar.
+
+## 1.5 Accuracy base y tasa de fallos base de referencia
+
+El porcentaje de observaciones de la clase minoritaria (y, por tanto, la tasa de fallos de referencia) es:
+
+```{r}
+table(dfbis$Obesity_Y_N)[2]/(table(dfbis$Obesity_Y_N)[2]+table(dfbis$Obesity_Y_N)[1])
+```
+
+Un 46%, prácticamente el 0.5 que suele tomarse como punto de corte por defecto.
+En cuanto a la accuracy:
+
+```{r}
+table(dfbis$Obesity_Y_N)[1]/(table(dfbis$Obesity_Y_N)[2]+table(dfbis$Obesity_Y_N)[1])
+```
+
+Un 54%.
+
+## 1.6 Representación gráfica de algunas variables
+
+A continuación se mostrarán algunos gráficos para ver la distribución de variables y la relación de dependencia entre la de interés y algunas que se consideran interesantes. Por ejemplo entre las variables continuas y si existe o no obesidad
+
+```{r}
+ggplot(data=df_rep, aes(Obesity_Y_N,Weight))+
+    geom_boxplot(color="lightblue")+
+    ggtitle("Obesidad según peso")
+
+ggplot(data=df_rep, aes(Obesity_Y_N, Height))+
+    geom_boxplot(color="green")+
+    ggtitle("Obesidad según altura")
+
+ggplot(data=df_rep, aes(Obesity_Y_N, Age))+
+    geom_boxplot(color="orange")+
+    ggtitle("Obesidad según edad")
+```
+
+Como era de esperar, las personas con mayor peso son aquellas que suelen presentar mayores casos de obesidad, siendo la diferencia entre la media de pesos de las personas que la padecen y las que no de unos 40kg. Por otro lado, la obesidad no parece estar asociada a la altura pues las distribuciones de esta son bastante similares. En cuanto a la edad, sí parece haber una cierta diferencia de unos 5 años entre el conjunto de personas con la enfermedad y los que no, pero no es muy indicativo porque casi todas las muestras pertenecen a esta sfranjas y sólo algunos outliers poseen edades más avanzadas.
+
+Para ver algunas relaciones entre las variables categóricas y la dependiente:
+
+```{r}
+ggplot(data=df_rep, aes(x = SMOKE, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según fumador")
+
+ggplot(data=df_rep, aes(x = FAF, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según práctica de ejercicio")
+
+ggplot(data=df_rep, aes(x = SCC, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según control de calorías")
+
+ggplot(data=df_rep, aes(x = CAEC, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según consumo de alimentos entre horas")
+
+ggplot(data=df_rep, aes(x = CALC, fill = Obesity_Y_N)) + 
+  geom_bar(position = "dodge") +
+    ggtitle("Obesidad según consumo de alcohol")
+```
+
+En estos ejemplos se pueden extraer algunos conclusiones. Entre ellas se encuentra que, por ejemplo, hay muchas más personas encuestadas que no fuman en contraste a las que sí lo hacen. De ellas, hay casi el mismo número de individuos con obesidad. 
+
+Una visualización más reveladora es la práctica de ejercicio, pues se puede observar que la cantidad de gente con obesidad es menor cuanto más frecuente es la práctica del ejercicio y siempre inferior a aquellos sin obesidad salvo en el nivel 0 (ningún ejercicio físico).
+
+Por último, se comentará el gráfico sobre el consumo de alcohol, pues es claro que la mayoría de encuestados no consumen alcohol o no lo hacen de manera frecuente y, en el primer caso, los afectados por obesidad son bastante inferiores. Esta situación cambia al hablar de un consumo ocasional, pues ahí predomina más la obesidad.
+
+
+# 2. Selección de variables
+
+## 2.1 Selecciones tipo stepwise
+
+Una vez se han limpiado y preparado los datos, se continuará con la selección de variables a incluir en la red mediante diversos métodos. Primero se probará con selecciones tipo stepwise:
+
+```{r}
+full<-glm(factor(Obesity_Y_N)~.,data=dfbis,family=binomial(link="logit"))
+null<-glm(factor(Obesity_Y_N)~1,data=dfbis,family=binomial(link="logit"))
+
+selec1<-stepAIC(null,scope=list(upper=full),direction="both",trace=FALSE)
+summary(selec1)
+formula(selec1)
+```
+
+Usando el criterio del AIC las variables que se escogen para el modelo son Weight, Height, Gender.Female y FAF.0, pero los valores que se obtienen en los p-valor son extremadamente altos. Esto es debido a que existe una separación casi perfecta y para mejorarlo se emplea bayesglm que aplica algunas correcciones en las estimaciones:
+
+```{r}
+control<-trainControl(method = "none",savePredictions = "all",classProbs=TRUE)
+
+logi<- train(factor(Obesity_Y_N)~Weight+Height+Gender.Female+FAF.0,
+             data=dfbis,method="bayesglm",trControl=control)
+
+summary(logi)
+```
+
+Así se puede comprobar cómo los parámetros son bastante más significativos y con valores más adecuados.
+
+Es casi seguro que la correlación perfecta es generada por la variable Weight, pues es bastante obvio que la obesidad va a estar muy relacionada con el peso de un individuo y que esta va a opacar la importancia que puedan poseer otras variables si esta se desconociera. Por ello, se va a repetir el proceso excluyendo a esta del conjunto de datos:
+
+```{r}
+dfbis2<-dfbis %>% select(-Weight)
+full<-glm(factor(Obesity_Y_N)~.,data=dfbis2,family=binomial(link="logit"))
+null<-glm(factor(Obesity_Y_N)~1,data=dfbis2,family=binomial(link="logit"))
+
+selec1<-stepAIC(null,scope=list(upper=full),direction="both",trace=FALSE)
+summary(selec1)
+formula(selec1)
+```
+
+Excluyendo Weight, se esogen muchas más variables y, además, con gran poder explicativo, por lo que de cara a los siguientes apartados no se incluirá de manera deliberada Weight con la finalidad de comprender mejor la importancia real de las demás variables.
+
+Se prueba también con la selección mediante BIC:
+
+```{r}
+selec2<-step(null, scope=list(lower=null, upper=full), direction="both",
+                    k=log(nrow(dfbis2)),trace=F)
+summary(selec2)
+```
+
+En esta figuran 3 parámetros menos, por lo que también se considerará.
+
+## 2.2 Otros tipos de selección
+
+```{r}
+##################### Si me dice que es mejor incluyendo Weight hay que poner Weight en todas las listcontis y dfbis en vez de dfbis2 ######################3
+```
+
+A continuación se realizará selección repetida con submuestras de datos mediante la función steprepetido, primero mediante el criterio AIC:
+
+```{r}
+# Aplicando steprepetido binaria con criterio AIC
+
+source("funcion steprepetido binaria.R")
+dput(names(dfbis2))
+
+listconti<-
+    c("Height", "Age", "Gender.Female", "Gender.Male",
+      "family_history_with_overweight.no", "family_history_with_overweight.yes",
+      "FAVC.no", "FAVC.yes", "FCVC.1", "FCVC.2", "FCVC.3", "NCP.1",
+      "NCP.2", "NCP.3", "NCP.4", "CAEC.Frequently", "CAEC.Sometimes",
+      "SMOKE.no", "CH2O.1", "CH2O.2", "CH2O.3", "SCC.no", "FAF.0",
+      "FAF.1", "FAF.2", "FAF.3", "TUE.0", "TUE.1", "TUE.2", "CALC.no",
+      "CALC.Sometimes", "MTRANS.Automobile", "MTRANS.Public_Transportation")
+vardep<-c("Obesity_Y_N")
+
+data<-dfbis2
+
+lista_AIC<-steprepetidobinaria(data=data,
+                           vardep=vardep,listconti=listconti,sinicio=12345,
+                           sfinal=12355,porcen=0.8,criterio="AIC")
+
+tabla_AIC<-lista[[1]]
+dput(lista[[2]][[1]])
+dput(lista[[2]][[2]])
+```
+
+Con ella, los modelos elegidos son básicamente los mismos que los seleccionados mediante stepwise. Las variables Weight, Height, Gender.Male o Female y el ejercicio físico inexistente son las necesarias para explicar el modelo.
+
+Se prueba también con BIC:
+
+```{r}
+# Aplicando steprepetido binaria con BIC
+
+lista_BIC<-steprepetidobinaria(data=data,
+                           vardep=vardep,listconti=listconti,sinicio=12345,
+                           sfinal=12355,porcen=0.8,criterio="BIC")
+
+tabla_BIC<-lista[[1]]
+dput(lista[[2]][[1]])
+dput(lista[[2]][[2]])
+```
+
+El resultado es exactamente el mismo. Por el momento se podrían considerar 3 modelos:
+factor(Obesity_Y_N) ~ Weight + Height + Gender.Female + FAF.0, factor(Obesity_Y_N) ~ Weight + Height + Gender.Male + FAF.0 o factor(Obesity_Y_N) ~ Weight + Height + Gender.Female.
+
+Como son todos muy similares se incluirán otros 2 con algunas de las variables categóricas que posean un menor p-valor a la hora de hacer train sobre todas las variables:
+
+```{r}
+logi2<- train(factor(Obesity_Y_N)~.,
+             data=dfbis,method="bayesglm",trControl=control)
+
+summary(logi2)
+```
+
+Viendo los p-valor, se añadirán otros 2 modelos, uno incluyendo la variale FAVC.yes (consumo de comida basura) y otro con CH2O.2 (consumo de agua moderado) pues son los que están algo más cerca de ser considerados como significativos.
+
+
+## 2.3 Comparación de sets mediante validación cruzada y boxplot bajo regresión
+
+Con los 5 conjuntos de variables escogidos, se llevará a cabo la validación cruzada repetida para obtener la mejor combinación:
+
+```{r}
+source("cruzadas avnnet y log binaria.R")
+
+medias1<-cruzadalogistica(data=dfbis, vardep="Obesity_Y_N",listconti=c("Weight", "Height", "Gender.Female", "FAF.0"), listclass=c(""), grupos=4,sinicio=1234,repe=5)
+
+medias1$modelo="Logística1"
+
+############################################
+
+medias2<-cruzadalogistica(data=dfbis, vardep="Obesity_Y_N",listconti=c("Weight", "Height", "Gender.Male", "FAF.0"), listclass=c(""), grupos=4,sinicio=1234,repe=5)
+
+medias2$modelo="Logística2"
+
+############################################
+
+medias3<-cruzadalogistica(data=dfbis, vardep="Obesity_Y_N",listconti=c("Weight", "Height", "Gender.Female"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias3$modelo="Logística3"
+
+############################################
+
+medias4<-cruzadalogistica(data=dfbis, vardep="Obesity_Y_N",listconti=c("Weight", "Height", "Gender.Female", "FAF.0", "FAVC.yes"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias4$modelo="Logística4"
+
+############################################
+
+medias5<-cruzadalogistica(data=dfbis, vardep="Obesity_Y_N",listconti=c("Weight", "Height", "Gender.Female", "FAF.0", "CH2O.2"), listclass=c(""), grupos=4, sinicio=1234,repe=5)
+
+medias5$modelo="Logística5"
+
+```
+
+Ahora se dibujan los boxplots para la tasa de fallos y el AUC:
+
+```{r}
+union1<-rbind(medias1,medias2,medias3,medias4,medias5)
+
+par(cex.axis=0.5)
+boxplot(data=union1,tasa~modelo,main="TASA FALLOS")
+```
+
+```{r}
+boxplot(data=union1,auc~modelo,main="AUC")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
