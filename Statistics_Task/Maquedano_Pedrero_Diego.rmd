@@ -1,0 +1,402 @@
+---
+title: "Machine Learning para detección de Fraude"
+author: "Carlos Ortega - cof@qualityexcellence"
+date: "Agosto - 2018"
+output: 
+  html_document:
+    theme: spacelab
+    highlight: tango
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true
+    code_folding: show
+    number_sections: true
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+---
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.align='center',
+                      echo=TRUE)
+```
+
+# Carga de librerías
+
+Antes de comenzar, se comprueba que la librerías a emplear a lo largo de los 
+ejercicios estén instalada y, en caso contrario, proceder a instalarlas con el
+siguiente código:
+
+```{r}
+comprobar <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE)
+    sapply(pkg, require, character.only = TRUE)
+}
+paquetes<-c("gtools", "ggplot2", "tidyverse", "readxl","psych", "car",
+            "cowplot","nortest", "ggpubr")
+
+comprobar(paquetes)
+```
+
+# Pregunta 1
+
+## Apartado a
+
+Una vez se han hecho las comprobaciones iniciales de librerías de R, se comienza
+con los ejercicios propiamente dichos. Lo primero que se ha de realizar es la 
+carga de los datos del Excel en un dataframe para poder realizar cálculos con
+ellos.
+
+En un script interactivo, para facilitar la elección del archivo por parte del
+usuario se utilizaría el siguiente código:
+
+```{r}
+#datos<-read.csv(choose.files())
+```
+
+Como el output es un archivo HTML no interactivo, fijo el directorio en el que 
+guardo los datos y ya procedo a leerlos:
+
+```{r}
+# Primero se fija el directorio
+setwd("C:/Users/Diego/Desktop/MASTER BIG DATA/Modulo_6_Estadistica/2.Tareas")
+
+# Cargar los datos de excel e incluirlos en un dataframe mediante el uso de pipe
+# con dplyr
+datos<- read_excel("Libro1.xlsx") %>%
+            as.data.frame()
+
+# Se modifican los headers para evitar problemas por tildes y espacios
+colnames(datos) <- c("Epoca_historica","Anchura_del_craneo")
+
+datos
+```
+
+A continuación, para obtener los distintos datos solicitados, se dividirán los
+datos en 2 grupos diferentes en base a la época histórica:
+
+```{r}
+predi_temprano <- filter(datos, Epoca_historica==1)
+predi_tardio <- filter(datos, Epoca_historica==2)
+```
+
+También se crean algunas funciones que se usarán para obtener algunas medidas:
+
+```{r}
+# FUnción para obtener la moda
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# FUnción para obtener el coeficiente de variación de Pearson
+coef_var <- function(x, na.rm = TRUE) {
+  sd(x, na.rm=na.rm) / mean(x, na.rm=na.rm)
+}
+```
+
+
+Y se obtienen las medidas para cada uno de los grupos.
+
+### Predinástico temprano
+
+Medidas de posición central
+
+```{r}
+# Se obtienen en un dataframe el número de observaciones, la media, mediana y
+# moda
+predi_temprano %>%
+  summarise(
+          Epoca = "Predinástico Temprano",
+          Observaciones = n(),
+          Media = mean(Anchura_del_craneo, na.rm = TRUE),
+          Mediana = median(Anchura_del_craneo, na.rm = TRUE),
+          Moda =Mode(Anchura_del_craneo),
+          )
+```
+
+Medidas de posición no centrales
+
+```{r}
+# Se obtienen sólo las divisiones para 5 tramos por no hacer información
+# redundante
+quantile(predi_temprano$Anchura_del_craneo)
+```
+
+Medidas de dispersión
+
+```{r}
+# Se obtienen en un dataframe el mínimo y máximo para el rango, la varianza, la 
+# desviación típica y el coeficiente de variación de Pearson
+predi_temprano %>%
+  summarise(
+          Epoca = "Predinástico Temprano",
+          Min = min(Anchura_del_craneo),
+          Max = max(Anchura_del_craneo),
+          Varianza = var(Anchura_del_craneo, na.rm = TRUE),
+          Des_Tipica = sd(Anchura_del_craneo, na.rm = TRUE),
+          CV_Pearson = coef_var(Anchura_del_craneo),
+          )
+```
+
+Medidas de forma
+
+```{r}
+# Se obtienen en un dataframe el el coeficiente de asimetría y la curtosis
+predi_temprano %>%
+  summarise(
+          Epoca = "Predinástico Temprano",
+          Asimetria = skew(Anchura_del_craneo, na.rm = TRUE),
+          Curtosis = kurtosi(Anchura_del_craneo, na.rm = TRUE),
+          )
+```
+
+Diagrama de caja y bigotes
+
+```{r}
+# Se dibuja un boxplot para la anchura del cráneo
+boxplot(predi_temprano$Anchura_del_craneo,
+        ylab="Anchura del craneo",
+        main="Diagrama de caja anchura del cráneo predinástico temprano")
+```
+
+--------------------------------------------------------------------------------
+
+### Predinástico tardío
+
+Medidas de posición central
+
+```{r}
+# Se obtienen en un dataframe el número de observaciones, la media, mediana y
+# moda
+predi_tardio %>%
+  summarise(
+          Epoca = "Predinástico Tardío",
+          Observaciones = n(),
+          Media = mean(Anchura_del_craneo, na.rm = TRUE),
+          Mediana = median(Anchura_del_craneo, na.rm = TRUE),
+          Moda =Mode(Anchura_del_craneo),
+          )
+```
+
+Medidas de posición no centrales
+
+```{r}
+# Se obtienen sólo las divisiones para 5 tramos por no hacer información
+# redundante
+quantile(predi_tardio$Anchura_del_craneo)
+```
+
+Medidas de dispersión
+
+```{r}
+# Se obtienen en un dataframe el mínimo y máximo para el rango, la varianza, la 
+# desviación típica y el coeficiente de variación de Pearson
+predi_tardio %>%
+  summarise(
+          Epoca = "Predinástico Tardío",
+          Min = min(Anchura_del_craneo),
+          Max = max(Anchura_del_craneo),
+          Varianza = var(Anchura_del_craneo, na.rm = TRUE),
+          Des_Tipica = sd(Anchura_del_craneo, na.rm = TRUE),
+          CV_Pearson = coef_var(Anchura_del_craneo),
+          )
+```
+
+Medidas de forma
+
+```{r}
+# Se obtienen en un dataframe el el coeficiente de asimetría y la curtosis
+predi_tardio %>%
+  summarise(
+          Epoca = "Predinástico Tardío",
+          Asimetria = skew(Anchura_del_craneo, na.rm = TRUE),
+          Curtosis = kurtosi(Anchura_del_craneo, na.rm = TRUE),
+          )
+
+```
+
+Diagrama de caja y bigotes
+
+```{r}
+# Se dibuja un boxplot para la anchura del cráneo
+boxplot(predi_tardio$Anchura_del_craneo,
+        ylab="Predinástico Tardío",
+        main="Diagrama de caja anchura del cráneo predinástico tardío")
+```
+
+--------------------------------------------------------------------------------
+
+Una vez obtenidos los datos, se pueden hacer algunas apreciaciones sobre los 
+mismos. En primer lugar, ambos grupos poseen el mismo número de operaciones, 
+esto es, 30, por lo que ambas muestras son igual de poco fiables. En los cráneos
+del predinástico temprano (PTem) la media queda algo por debajo de la mediana,
+algo contrario a los cráneos del predinástico tardío (PTar) los cuales poseen 
+una medialevemente por encima que la mediana, lo que puede llevar a pensar que 
+en los primeros la distribución sería algo asimétrica negativa y en los segundos
+asimétrica positiva. Por otro lado, la moda es 2 cm superior en los cráneos del
+Ptar que si bien requiere de otras hipótesis, puede llevar a pensar que una 
+anchura de cráneo mayor era más habitual en el segundo período.
+
+Pasando a las medidas de rango y dispersión, el mínimo y máximo en el cráneos 
+del Ptem es 1cm inferior a lo encontrado en los cráneos del Ptar, algo que se
+traslada al resto de cuartiles, dando la sensación de que en el segundo período 
+la distribución está desplazada hacia una mayor anchura. Por el lado de la
+varianza y la desviación típica, vemos que son de las medidas que más diferencia
+presentan entre períodos, siendo el Ptar el que presenta una mayor variabilidad. 
+Aún así, el coeficiente de variación queda muy cercano a 0 en ambos casos lo
+cual implica que la media es un valor robusto y muy explicativo al no variar en
+exceso los datos respecto a ella.
+
+Haciendo referencia a las medidas de forma, nos damos cuenta de que la asimetría muestra algo diferente a lo deducido por la media y la mediana: ambos grupos
+poseen distribuciones con curtosis mayor a 0 (asimetría positiva leve), pero el
+valor de PTem es más alto que el de Ptar, con lo que la asimetría positiva es 
+más marcada a pesar de que la media sea algo inferior a la mediana. Esto es 
+posible según un artículo de Paul T. von Hippel titulado
+[Mean, Median, and Skew: Correcting a Textbook Rule](https://www.tandfonline.com/doi/full/10.1080/10691898.2005.11910556)
+pero interesante a la par.
+Respecto a la curtosis, en el Ptem es positiva, indicio de una distribución 
+leptocúrtica (alta concentración de valores en torno a la media) y en el Ptar
+es negativa, indicio de una distribución leptocúrtica, con menor concentración 
+de valores, tal como esperaríamos de una mayor varianza y dispersión explicadas
+en el apartado anterior.
+
+
+## Apartado b
+
+En este aprtado se comprobará la normalidad de ambos subgrupos de la muestra. 
+No se pide en el enunciado, puede ser representativo el hacer un histograma
+junto con la densidad de la distribución pese a que al haber tan poca muestra no
+sean del todo fiables
+
+```{r}
+plot_temp<-ggplot(predi_temprano,aes(x=Anchura_del_craneo))+
+    geom_histogram(aes(y=..density..),colour="black",fill="white", bins = 5)+
+    geom_density(alpha=.3,fill="light blue")+
+    ggtitle("Predinástico Temprano")
+
+plot_tard<-ggplot(predi_tardio,aes(x=Anchura_del_craneo))+
+    geom_histogram(aes(y=..density..),colour="black",fill="white", bins = 5)+
+    geom_density(alpha=.3,fill="light blue")+
+    ggtitle("Predinástico Tardío")
+
+plot_grid(plot_temp, plot_tard, labels = "AUTO")
+```
+
+Los resultado demuestran claramente distribuciones no normales, con varias
+"montañas" y asimetría en las distribuciones de densidad, pero se deberá
+confirmar con algún contraste de hipótesis. El test de Kolmogorov-Smirnov no
+debería aplciarse aquí porque hay un número muy pequeño de datos, no se
+conocen la media y varianza poblacional y hay varios elementos de la
+distribución repetidos. Tampoco sería ideal usar el test de Lilliefors pues el
+tamaño de la muestra es inferior a los 50 individuos recomendables de manera que
+se empleará para contrastar el test de Saphiro-Wilk:
+
+```{r}
+# Test de Shapiro-Wilk para Ptemp
+shapiro.test(predi_temprano$Anchura_del_craneo)
+```
+
+Como el p-valor es muy cercano a 0 e inferior a un alpha de 0.05, se puede
+rechazar la hipótesis nula de normalidad para una confianza del 5% e incluso el
+1%. La anchura de los cráneos del predinástico temprano no sigue una
+distribución normal
+
+```{r}
+# Test de Shapiro-Wilk para PTar
+shapiro.test(predi_tardio$Anchura_del_craneo)
+```
+
+Como el p-valor es muy cercano a 0 e inferior a un alpha de 0.05, se puede
+rechazar la hipótesis nula de normalidad para una confianza del 5% e incluso el
+1%. La anchura de los cráneos del predinástico tardío tampoco sigue una
+distribución normal
+
+
+# Pregunta 2
+
+## Apartados a y b
+
+En este apartado se está ante un caso de obtención del intervalo de confianza
+para la diferencia de medias en poblaciones no normales y con varianzas
+desconocidas. El enunciado por su parte, nos indica que asumamos independencia
+de muestras. Faltaría por comprobar si ambas muestras poseen igualdad de
+varianzas algo que se puede ver con el test de Levene:
+
+```{r}
+leveneTest(predi_temprano$Anchura_del_craneo,predi_tardio$Anchura_del_craneo)
+```
+
+Este test arroja un p-valor muy elevado de 0.77, más que suficiente para no 
+poder rechazar la hipótesis nula de igualdad de varianzas.
+
+Con estas características hay un problema, pues los intervalos y la forma
+de calcularlos implican que las distribuciones sean normales, cuando
+realmente no lo son. Aún así, a efectos del ejercicio se procederá a su cálculo
+y a discutir las implicaciones:
+
+Intervalo al 0.9:
+```{r}
+t.test(predi_temprano$Anchura_del_craneo, predi_tardio$Anchura_del_craneo,
+       conf.level = 0.9, var.equal = TRUE)
+```
+
+IC90% = (-1.32,-0.53)
+
+Intervalo al 0.95:
+```{r}
+t.test(predi_temprano$Anchura_del_craneo, predi_tardio$Anchura_del_craneo,
+       conf.level = 0.95, var.equal = TRUE)
+```
+
+IC95% = (-1.4,-0.45)
+
+Intervalo al 0.99:
+```{r}
+t.test(predi_temprano$Anchura_del_craneo, predi_tardio$Anchura_del_craneo,
+       conf.level = 0.99, var.equal = TRUE)
+```
+
+IC99% = (-1.54,-0.3)
+
+Los intervalos de confianza obtenidos para cada uno de los niveles de confianza
+no contienen al 0 entre sus valores de lo que se deduce que las medias no son
+iguales para los distintos períodos. La pregunta que se quiere responder es en 
+qué epoca los cráneos poseían más anchura para lo que basta con comprobar el
+signo del límite inferior y superior de los intervalos. Este es negativo, 
+por lo que sabiendo que se ha colocado como primera muestra a los cráneos del 
+PTem y que se está restando la media de los cráneos de PTar, lleva a deducir que
+los cráneos del Ptar eran, efectivamente, más alargados.
+
+Al no ser normales las distribuciones, no es fiable este resultado, como tampoco
+lo será el t-test, pues recordemos que los requisitos para poder aplicarlo son
+que las muestras sean independientes, que tengan igualdad de varianza y que sean
+normales, siendo este último el que no se cumple. Trayendo de nuevo el resultado
+del intervalo para el 95%:
+
+```{r}
+t.test(predi_temprano$Anchura_del_craneo, predi_tardio$Anchura_del_craneo,
+       conf.level = 0.95, var.equal = TRUE)
+```
+
+El p-valor es muy cercano a 0, por lo que al igual que lo deducido previamente,
+hay evidencias para rechazar la hipótesis nula de igualdad de medias.
+
+## Conclusiones
+
+Tras llevar a cabo todo el análisis, parece poder determinarse que los cráneos 
+del período predinástico tardío eran más alargados que los del predinástico 
+temprano. Esto viene respaldado mayoritariamente por los datos estadíticos 
+descriptivos calculados en la primera parte del trabajo y por los intervalos
+de confianza obtenidos en el segundo apartado. Sin embargo, estos resultados
+no pueden tomarse como completamente válidos porque a pesar de que los datos
+cumplen casi todos los requisitos para emplear test de contraste, violan la
+condición más importante que es que la distribución sea normal.
+
+
+
+
+
