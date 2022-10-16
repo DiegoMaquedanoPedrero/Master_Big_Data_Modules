@@ -1,0 +1,276 @@
+---
+title: "Tarea Evaluación Series Temporales"
+author: "Diego Maquedano Pedrero"
+date: "Febrero 2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, fig.align='center',
+                      echo=TRUE)
+```
+
+## Carga de librerías y datos
+
+Antes de comenzar, se comprueba que las librerías a emplear a lo largo de los 
+ejercicios estén instaladas y, en caso contrario, proceder a instalarlas con el siguiente código:
+
+```{r}
+comprobar <- function(pkg){
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    if (length(new.pkg)) 
+        install.packages(new.pkg, dependencies = TRUE)
+    sapply(pkg, require, character.only = TRUE)
+}
+paquetes<-c("tidyverse","factoextra","FactoMineR","cluster","readxl",
+            "ggplot2","corrplot","psych","heatmaply","VIM",
+            "NbClust","scales","descr","caret","magrittr", "dendextend",
+            "ggpubr", "reshape2", "ggfortify", "forecast")
+comprobar(paquetes)
+```
+
+### Pregunta 1: Explicación de la serie temporal escogida
+
+La serie que se va a emplear para la realización del proyecto es un conjunto con los datos de temperatura media mensual en España desde el año 1901 hasta la actualidad. Por requerimientos del enunciado, se limitará el empleo de los datos a una franja que abarcará los últimos 16 años (192 observaciones).
+
+El dataset ha sido extraído del siguiente enlace: [https://climateknowledgeportal.worldbank.org/download-data] y debe ser tratado para poder emplearlo en el análisis como se muestra a continuación:
+
+```{r}
+# Se leen los datos del archivo csv
+data<-read.csv("tas_timeseries_monthly_cru_1901-2020_ESP.csv")
+head(data)
+
+# Se hace melt para que cada línea tenga como key el año y el mes
+data<-melt(data, id.vars = "Year", variable.name = "Month") %>%
+  arrange(Year) %>% filter(Year>=2005)
+# Se guardan en 1 variable los nombres de los meses (3 primeras letras)
+months<-month.abb
+
+# Se sustituye el mes con letras por el mes en formato número, formateando todos para que presenten 2 dígitos
+meses<-match(data$Month, months) %>% str_pad(2, pad="0")
+
+# Se crea una nueva columna que se la combinación del mes con el año y el día 1 para así poder convertirlo a formato fecha
+fechas<-as.Date(paste(data$Year, meses, "01", sep="-"))
+
+# Se crea un vector que contenga únicamente los valores de temperatura
+data<-data$value
+
+# Se convierte a serie temporal y se representa
+temps<-ts(data=data, start=c(2005,1), end=c(2020,12), frequency = 12)
+
+autoplot(temps)
+```
+
+Como es de esperar en datos sobre temperaturas (más concretamente en España donde cambian considerablemente a lo largo del año), estos presentan una fuerte componente estacional con picos máximos a mediados de año y mínimos al final de uno o comienzo de otro.
+
+No es una serie estacionaria porque, aunque la media es constante y la varianza también, las autocorrelaciones entre observaciones no son constantes por la estacionalidad y la evidente influencia de la observación t-1 sobre t.
+
+El comportamiento estacional tiene período 12.
+
+### Pregunta 2: Representación gráfica y descomposición estacional (si tuviera comportamiento estacional).
+
+La representación gráfica es la siguiente, tal como se ha mostrado en el apartado anterior:
+
+```{r}
+autoplot(temps) + ggtitle("Serie temperaturas España 2005-2020") +
+  xlab("t") + ylab("Temperatura")
+```
+
+Por otro lado, es evidente que la serie tiene un gran comportamiento estacional aditivo en este caso, porque a medida que aumenta el eje x (los meses) no se ve incrementado el patrón estacional, las fluctuaciones son constantes:
+
+```{r}
+comp_estac<- decompose(temps,type=c("additive"))
+autoplot(comp_estac, ts.colour = "blue")
+```
+
+Los anteriores gráficos muestran los distintos componentes de la serie siendo la componente estacional prácticamente igual a los propios datos y con una tendencia no muy clara, pero sí levemente creciente en los últimos años. 
+
+A continuación se evaluarán los componentes numéricos estacionales:
+
+```{r}
+comp_estac$seasonal
+```
+
+A diferencia del modelo multiplicativo, los valores que aparecen aquí no representan porcentajes, sino los grados naturales por encima o por debajo de la media en cada mes. Así, en enero suele haber 7 grados menos que la media mientras que en Julio y Agosto la temperatura se sitúa 9 grados por encima de la media anual.
+
+Continuando con la representación gráfica de la estacionalidad sobre la serie original :
+
+```{r}
+autoplot(temps, series="Datos") +
+autolayer(trendcycle(comp_estac), series="Tendencia")+
+autolayer(seasadj(comp_estac), series="Estacionalmente ajustada")+
+xlab("t") + ylab("Temperatura media") +
+ggtitle("Serie de temperaturas") +
+scale_colour_manual(values=c("gray","blue","red"),
+breaks=c("Datos","Estacionalmente ajustada","Ten
+dencia"))
+```
+
+Y para ver las temperaturas a lo largo de los años en un único gráfico apiladas:
+
+```{r}
+ggseasonplot(temps, year.labels=TRUE, year.labels.left=TRUE) +
+ylab("Numero") +
+ggtitle("Seasonal plot: temperaturas")
+```
+
+Vemos que todas siguen un patrón muy parecido y no es claro que hayan aumentado con una gran diferencia respecto a otros años sino que toman valores muy parecidos.
+
+### Pregunta 3: Para comprobar la eficacia de los métodos de predicción que vamos a hacer en los siguientes apartados reservamos los últimos datos observados (un periodo en las series estacionales o aproximadamente 10 observaciones) para comparar con las predicciones realizadas por cada uno de los métodos. Luego ajustamos los modelos sobre la serie sin esos últimos datos en los siguientes apartados
+
+Cogemos datos hasta el penúltimo año para entrenar sobre ellos
+
+```{r}
+temps_train=window(temps, start=c(2005,1), end=c(2019,12))
+```
+
+### Pregunta 4: Encontrar el modelo de suavizado exponencial más adecuado. Para dicho modelo, representar gráficamente la serie observada y la suavizada con las predicciones para un periodo que se considere adecuado.
+
+Para esta serie en particular, se deberá emplear un triple alisado exponencial o modelado Holt-Winters aditivo. Aditivo porque recordemos que las fluctuaciones no se ven incrementadas con el tiempo y de Holt-Winters para poder incluir la estacionalidad.
+
+Se descarta el alisado simple o SES porque, si bien la tendencia parece que se mantiene constante, se puede incluir la componente estacional para mejorar el modelo.
+
+El modelo se generaría con el siguiente código:
+
+```{r}
+fit_1<-hw(temps_train, h=12, seasonal = "additive", level = c(80,95))
+autoplot(fit_1)
+```
+
+Como se puede observar, el último período (que abarca los 12 meses del año 2020) se adapta de forma muy precisa al comportamiento general que viene mostrando la serie a lo largo de los últimos años.
+
+Respecto a los valores numéricos de dicha predicción, se muestran a continuación:
+
+```{r}
+knitr:: kable(fit_1, caption="Predicciones Temperaturas")
+```
+
+Los valores son bastante razonables para lo esperado en sus respectivos meses.
+
+#### Pregunta 5: Representar la serie y los correlogramas. Decidir que modelo puede ser ajustado. Ajustar el modelo adecuado comprobando que sus residuales están incorrelados. 
+(Sintaxis, tablas de los parámetros estimados y gráficos)
+
+De cara a completar los siguientes apartados, se seguirá la metodología Bok-Jenkins. En primer lugar, se representa de nuevo la serie original junto con los correspondientes correlogramas hasta un lag de 50:
+
+```{r}
+# Gráfico de los datos
+autoplot(temps) + xlab("t") + ylab("") +
+ggtitle("Temperaturas y correlograma")
+
+# Autocorrelación simple
+ggAcf(temps, lag.max = 50) + ggtitle("Autocorrelación simple")
+
+# Autocorrelación parcial
+ggPacf(temps, lag.max = 50) + ggtitle("Autocorrelación parcial")
+
+```
+
+En cuanto a los primeros 10 valores numéricos de acf y pacf:
+
+```{r}
+corr_acf<-Acf(temps, lag=10)
+print(corr_acf)
+
+corr_pacf<-Pacf(temps, lag=10)
+print(corr_pacf)
+```
+
+
+Como ya se ha ido comentando, los datos muestran que no hay un incremento de la varianza por lo que no será necesario aplicar logaritmos a la serie para estabilizarla, ni tampoco será necesario diferenciarla porque carece de tendencia.
+
+En las autocorrelaciones simples se observa el comportamiento típico de series con estacionalidad, un fuerte repunte de la correlación en períodos determinadas (12 meses en este caso). Dado que la PACF posee 2 picos muy significativos o hasta un tercero, podría considerarse un modelo AR(2) o AR(3). Por el lado de la ACF, aunque no se puede extraer mucho por la fuerte correlación estacional, al incluir 2 valores altamente significativos al inicio, se podría proponer un modelo MA(2).
+
+Siguiendo las conlusiones extraídas, el modelo que podría ajustarse sería un: $ARIMA(2,0,2)(0,1,1)12$.
+
+Se ajusta y se comprueba si los residuos están efectivamente incorrelados:
+
+```{r}
+fit_temps<-arima(temps, c(2,0,2), seasonal = c(0,1,1))
+checkresiduals(fit_temps)
+```
+
+El gráfico de los residuos se asemeja a un ruido blanco, con una media de 0, varianza constante y con todas las autocorrelaciones dentro de los márgenes de confianza como para no ser considerados significativos al 95%. El contraste de Ljung-Box arroja un p-valor de 0,5637 con lo que no se rechaza la hipótesis nula de residuos incorrelados. 
+
+Otra forma de obtener el mejor modelo habría sido usando la función auto.arima la cual  permite obtener modelos automáticos hasta hallar el primero con residuos incorrelados:
+
+```{r}
+fit_temps_auto<-auto.arima(temps)
+fit_temps_auto
+checkresiduals(fit_temps_auto)
+```
+
+Este indica el modelo  $ ARIMA(2,0,2)(0,1,2)_{12} $ que si bien es muy similar al propuesto manualmente, ofrece un p-valor superior para el contraste de Ljung-Box y es, por tanto, algo más acertado, siendo este el escogido para representar la serie.
+
+#### Pregunta 6: Escribir la expresión algebraica del modelo ajustado con los parámetros estimados.
+
+Los coeficientes del modelo elegido son:
+
+```{r}
+fit_temps_auto$coef
+```
+
+Y la fórmula que define al modelo es la siguiente:
+
+$(1-0.89B+0.63B^{2})(1-B^{12})X_{t}=(1-0.99B^{12}+0.13B^{24})(1-0.62B+0.61B^{2})Z_{t}$
+
+
+### Pregunta 7: Calcular las predicciones y los intervalos de confianza para las unidades de tiempo que se considere oportuno, dependiendo de la serie, siguientes al último valor observado. Representarlas gráficamente.
+
+Las predicciones se realizarán para los 12 meses siguientes que supondrían 1 período completo:
+
+```{r}
+predicciones<-forecast(fit_temps_auto, h=12)
+autoplot(predicciones)
+```
+
+De forma muy semejante a la predicción obtenida mediante el suavizado exponencial de Holt-Winters, los valores se adaptan mucho a lo esperado en el siguiente período.
+
+Se pueden indicar los valores tanto para las predicciones en sí como para sus intervalos de confianza. En esta serie no ha sido necesario diferenciar ni aplicar logaritmos así que no se requieren transformaciones en los valores:
+
+```{r}
+knitr::kable(predicciones, caption="Predicciones")
+```
+
+#### Pregunta 8: Comparar las predicciones obtenidas con cada uno de los métodos con los valores observados que habíamos reservado antes. Conclusiones.
+
+En este apartado se representarán los valores predichos tanto por el modelo especificado manualmente, por el modelo generado mediante el auto-arima y por el modelo aplicando logaritmos (que se creará en este punto sólo para comprobar que al no ser necesaria la aplicación de logaritmos, su uso no implica diferencias en los valores)
+
+```{r}
+modelo_manual<-arima((temps), c(2,0,2), seasonal = c(0,1,1))
+predi_manual<- forecast(modelo_manual, h=12)
+
+modelo_auto<-auto.arima(temps)
+predi_auto<-forecast(modelo_auto, h=12)
+
+modelo_log<-auto.arima(log(temps))
+predi_log<-forecast(modelo_log, h=12)
+
+```
+
+La representación de las predicciones para cada uno de los modelos se muestra a continuación  (para que funcione correctamente, se deben desactivar las librerías ggfortify y forecast para volverlas a cargar asegurando que ggfortify se cargue primero:
+
+```{r}
+# Desactivar librerías
+detach("package:ggfortify", unload=TRUE)
+detach("package:forecast", unload=TRUE)
+
+# Activarlas de nuevo
+library(ggfortify)
+library(forecast)
+
+autoplot(temps) +
+  autolayer(predi_manual, series="manual", PI=FALSE) +
+  autolayer(predi_auto, series="automatico", PI=FALSE) +
+  autolayer(exp(predi_log$mean), series="Logaritmos", PI=FALSE) +
+    ggtitle("Predicciones por diferentes modelos") +
+    xlab("t") + ylab("Temperatura") +
+    guides(colour=guide_legend(title="Forecast"))
+
+```
+
+La predicción de las 3 series es extremadamente similar, pues apenas se distinguen unos colores de otros, de manera que la precisión de los valores puede considerarse muy elevada y fiable.
+
